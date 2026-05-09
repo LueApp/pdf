@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PDF Combiner</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="page">
+    <header class="masthead">
+      <div class="masthead-copy">
+        <p class="eyebrow">Local PDF tool</p>
+        <h1>PDF Combiner</h1>
+      </div>
+      <div class="masthead-meta" id="summary" aria-live="polite">0 files • 0 pages</div>
+    </header>
+
+    <main class="layout">
+      <section class="queue-panel" aria-labelledby="queue-title">
+        <div class="panel-head">
+          <div>
+            <h2 id="queue-title">Queue</h2>
+            <p id="queue-note">Add PDF files to arrange the merge order.</p>
+          </div>
+        </div>
+
+        <div class="empty-state" id="empty-state">No PDFs loaded yet.</div>
+        <ul class="file-list" id="file-list" aria-live="polite"></ul>
+      </section>
+
+      <aside class="control-panel" aria-labelledby="controls-title">
+        <h2 id="controls-title">Controls</h2>
+
+        <button type="button" class="dropzone" id="dropzone">
+          <span class="dropzone-kicker">Import PDFs</span>
+          <span class="dropzone-title">Drop files here or click to choose</span>
+          <span class="dropzone-hint" id="drop-hint">No files selected.</span>
+        </button>
+
+        <input id="file-input" type="file" accept="application/pdf,.pdf" multiple hidden>
+
+        <div class="button-row">
+          <button type="button" id="add-btn">Add files</button>
+          <button type="button" id="clear-btn">Clear</button>
+        </div>
+
+        <button type="button" class="primary" id="preview-btn">Preview combination</button>
+
+        <div class="status-block">
+          <div class="status-label">Status</div>
+          <div id="status" aria-live="polite">Ready.</div>
+        </div>
+
+        <div class="output-block">
+          <div class="status-label">Output</div>
+          <div id="output">No preview generated yet.</div>
+        </div>
+      </aside>
+
+      <section class="preview-panel" aria-labelledby="preview-title">
+        <div class="panel-head">
+          <div>
+            <h2 id="preview-title">Preview</h2>
+            <p id="preview-note">Create a preview to inspect the merged PDF before downloading.</p>
+          </div>
+        </div>
+
+        <div class="preview-shell" id="preview-shell">
+          <div class="preview-placeholder" id="preview-placeholder">Merged preview will appear here.</div>
+          <iframe id="preview-frame" title="Merged PDF preview" hidden></iframe>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="./vendor/pdf-lib.min.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
