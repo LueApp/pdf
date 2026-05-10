@@ -8,6 +8,8 @@ Static browser-only PDF combiner for Cloudflare.
 - Select page ranges per input file
 - Rotate individual inputs
 - Reverse selected pages per input file
+- Fit source pages onto A4 or Letter output pages
+- Add front and end blank pages
 - Add a cover page
 - Add a table of contents
 - Add separator pages between queued PDFs

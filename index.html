@@ -50,6 +50,32 @@
           <input id="output-name" type="text" value="merged.pdf" autocomplete="off" spellcheck="false">
         </div>
 
+        <div class="option-grid" id="layout-options">
+          <div class="field-group">
+            <label for="page-size-mode">Output page size</label>
+            <select id="page-size-mode">
+              <option value="original">Original</option>
+              <option value="a4">A4</option>
+              <option value="letter">Letter</option>
+            </select>
+          </div>
+
+          <div class="field-group">
+            <label for="layout-margin">Fit margin</label>
+            <input id="layout-margin" type="number" min="0" max="72" value="24" inputmode="numeric">
+          </div>
+
+          <div class="field-group">
+            <label for="blank-before-count">Front blank pages</label>
+            <input id="blank-before-count" type="number" min="0" max="20" value="0" inputmode="numeric">
+          </div>
+
+          <div class="field-group">
+            <label for="blank-after-count">End blank pages</label>
+            <input id="blank-after-count" type="number" min="0" max="20" value="0" inputmode="numeric">
+          </div>
+        </div>
+
         <label class="check-row" for="cover-page">
           <input id="cover-page" type="checkbox">
           <span>Add cover page</span>

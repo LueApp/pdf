@@ -1,9 +1,15 @@
 const { PDFDocument, StandardFonts, degrees, rgb } = PDFLib;
 const COVER_PAGE_SIZE = [595.28, 841.89];
+const PAGE_SIZES = {
+  a4: COVER_PAGE_SIZE,
+  letter: [612, 792],
+};
 const TOC_ENTRIES_PER_PAGE = 24;
 
 const els = {
   addButton: document.getElementById('add-btn'),
+  blankAfterCount: document.getElementById('blank-after-count'),
+  blankBeforeCount: document.getElementById('blank-before-count'),
   clearButton: document.getElementById('clear-btn'),
   coverOptions: document.getElementById('cover-options'),
   coverPage: document.getElementById('cover-page'),
@@ -25,12 +31,14 @@ const els = {
   metadataTitle: document.getElementById('metadata-title'),
   output: document.getElementById('output'),
   outputName: document.getElementById('output-name'),
+  layoutMargin: document.getElementById('layout-margin'),
   pageNumberFormat: document.getElementById('page-number-format'),
   pageNumberOptions: document.getElementById('page-number-options'),
   pageNumberPosition: document.getElementById('page-number-position'),
   pageNumberScope: document.getElementById('page-number-scope'),
   pageNumberStart: document.getElementById('page-number-start'),
   pageNumbers: document.getElementById('page-numbers'),
+  pageSizeMode: document.getElementById('page-size-mode'),
   previewButton: document.getElementById('preview-btn'),
   previewFrame: document.getElementById('preview-frame'),
   previewPlaceholder: document.getElementById('preview-placeholder'),
@@ -126,6 +134,18 @@ function getTocOptions() {
   };
 }
 
+function getLayoutOptions() {
+  const sizeMode = els.pageSizeMode.value;
+  const pageSize = PAGE_SIZES[sizeMode] || COVER_PAGE_SIZE;
+  return {
+    sizeMode,
+    pageSize,
+    margin: clampInteger(els.layoutMargin.value, 0, 72, 24),
+    blankBefore: clampInteger(els.blankBeforeCount.value, 0, 20, 0),
+    blankAfter: clampInteger(els.blankAfterCount.value, 0, 20, 0),
+  };
+}
+
 function getMetadataOptions() {
   return {
     title: cleanTextInput(els.metadataTitle.value),
@@ -181,6 +201,13 @@ function clampInteger(value, min, max, fallback) {
 
 function activeModifierLabels() {
   const labels = [];
+  const layoutOptions = getLayoutOptions();
+  if (layoutOptions.sizeMode !== 'original') {
+    labels.push(`${layoutOptions.sizeMode.toUpperCase()} page fit`);
+  }
+  if (layoutOptions.blankBefore || layoutOptions.blankAfter) {
+    labels.push('blank pages');
+  }
   if (els.coverPage.checked) {
     labels.push('cover page');
   }
@@ -570,6 +597,10 @@ function renderControls() {
   els.previewButton.textContent = state.busy ? 'Creating preview...' : 'Preview combination';
   els.dropzone.disabled = disabled;
   els.outputName.disabled = disabled;
+  els.pageSizeMode.disabled = disabled;
+  els.layoutMargin.disabled = disabled || els.pageSizeMode.value === 'original';
+  els.blankBeforeCount.disabled = disabled;
+  els.blankAfterCount.disabled = disabled;
   els.coverPage.disabled = disabled;
   els.coverTitle.disabled = disabled || !els.coverPage.checked;
   els.coverSubtitle.disabled = disabled || !els.coverPage.checked;
@@ -781,19 +812,26 @@ async function previewCombination() {
     const pageInfos = [];
     applyMetadata(merged);
 
+    const layoutOptions = getLayoutOptions();
+    const generatedPageSize = layoutOptions.sizeMode === 'original' ? COVER_PAGE_SIZE : layoutOptions.pageSize;
     const coverOptions = getCoverOptions();
     const tocOptions = getTocOptions();
     const tocPageCount = tocOptions.enabled ? getTocPageCount() : 0;
-    const frontPageCount = (coverOptions.enabled ? 1 : 0) + tocPageCount;
+    const frontPageCount = layoutOptions.blankBefore + (coverOptions.enabled ? 1 : 0) + tocPageCount;
     const assemblyPlan = buildAssemblyPlan(frontPageCount);
 
+    for (let index = 0; index < layoutOptions.blankBefore; index += 1) {
+      addUserBlankPage(merged, generatedPageSize);
+      pageInfos.push({ role: 'blank' });
+    }
+
     if (coverOptions.enabled) {
-      await addCoverPage(merged, coverOptions);
+      await addCoverPage(merged, coverOptions, generatedPageSize);
       pageInfos.push({ role: 'cover' });
     }
 
     if (tocOptions.enabled) {
-      await addTableOfContents(merged, tocOptions, assemblyPlan);
+      await addTableOfContents(merged, tocOptions, assemblyPlan, generatedPageSize);
       for (let index = 0; index < tocPageCount; index += 1) {
         pageInfos.push({ role: 'toc' });
       }
@@ -813,23 +851,21 @@ async function previewCombination() {
       }
 
       if (section.blankBefore) {
-        await addDuplexBlankPage(merged);
+        await addDuplexBlankPage(merged, generatedPageSize);
         pageInfos.push({ role: 'blank' });
       }
 
       if (section.separatorPage) {
-        await addSeparatorPage(merged, item, section.index + 1, selection.indices.length);
+        await addSeparatorPage(merged, item, section.index + 1, selection.indices.length, generatedPageSize);
         pageInfos.push({ role: 'separator', sourceName: item.name, sectionIndex: section.index });
       }
 
       const sourceIndices = item.reverse ? [...selection.indices].reverse() : selection.indices;
-      const pages = await merged.copyPages(source, sourceIndices);
-      pages.forEach((page, pageIndex) => {
-        if (item.rotation) {
-          const currentRotation = page.getRotation().angle;
-          page.setRotation(degrees((currentRotation + item.rotation) % 360));
-        }
-        merged.addPage(page);
+      const addedPages = layoutOptions.sizeMode === 'original'
+        ? await addCopiedSourcePages(merged, source, sourceIndices, item)
+        : await addFittedSourcePages(merged, source, sourceIndices, item, layoutOptions);
+
+      addedPages.forEach((page, pageIndex) => {
         pageInfos.push({
           role: 'source',
           sourceName: item.name,
@@ -837,6 +873,11 @@ async function previewCombination() {
           sourcePage: sourceIndices[pageIndex] + 1,
         });
       });
+    }
+
+    for (let index = 0; index < layoutOptions.blankAfter; index += 1) {
+      addUserBlankPage(merged, generatedPageSize);
+      pageInfos.push({ role: 'blank' });
     }
 
     await addWatermark(merged);
@@ -897,9 +938,9 @@ function applyMetadata(pdf) {
   pdf.setModificationDate(new Date());
 }
 
-async function addCoverPage(pdf, options) {
+async function addCoverPage(pdf, options, pageSize = COVER_PAGE_SIZE) {
   const page = pdf.addPage();
-  page.setSize(COVER_PAGE_SIZE[0], COVER_PAGE_SIZE[1]);
+  page.setSize(pageSize[0], pageSize[1]);
   const titleFont = await pdf.embedFont(StandardFonts.HelveticaBold);
   const bodyFont = await pdf.embedFont(StandardFonts.Helvetica);
   const { width, height } = page.getSize();
@@ -934,7 +975,7 @@ async function addCoverPage(pdf, options) {
   drawCenteredLines(page, [details], bodyFont, 11, 72, 16, rgb(0.36, 0.4, 0.48));
 }
 
-async function addTableOfContents(pdf, options, entries) {
+async function addTableOfContents(pdf, options, entries, pageSize = COVER_PAGE_SIZE) {
   const titleFont = await pdf.embedFont(StandardFonts.HelveticaBold);
   const bodyFont = await pdf.embedFont(StandardFonts.Helvetica);
   const title = toDrawableText(options.title, 'Table of contents');
@@ -942,7 +983,7 @@ async function addTableOfContents(pdf, options, entries) {
 
   for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
     const page = pdf.addPage();
-    page.setSize(COVER_PAGE_SIZE[0], COVER_PAGE_SIZE[1]);
+    page.setSize(pageSize[0], pageSize[1]);
     const { width, height } = page.getSize();
     const sliceStart = pageIndex * TOC_ENTRIES_PER_PAGE;
     const pageEntries = entries.slice(sliceStart, sliceStart + TOC_ENTRIES_PER_PAGE);
@@ -1034,9 +1075,9 @@ async function addTableOfContents(pdf, options, entries) {
   }
 }
 
-async function addSeparatorPage(pdf, item, sectionNumber, selectedCount) {
+async function addSeparatorPage(pdf, item, sectionNumber, selectedCount, pageSize = COVER_PAGE_SIZE) {
   const page = pdf.addPage();
-  page.setSize(COVER_PAGE_SIZE[0], COVER_PAGE_SIZE[1]);
+  page.setSize(pageSize[0], pageSize[1]);
   const titleFont = await pdf.embedFont(StandardFonts.HelveticaBold);
   const bodyFont = await pdf.embedFont(StandardFonts.Helvetica);
   const { width, height } = page.getSize();
@@ -1064,11 +1105,66 @@ async function addSeparatorPage(pdf, item, sectionNumber, selectedCount) {
   drawCenteredLines(page, [pageCount], bodyFont, 11, height * 0.38, 16, rgb(0.36, 0.4, 0.48));
 }
 
-async function addDuplexBlankPage(pdf) {
+async function addDuplexBlankPage(pdf, pageSize = COVER_PAGE_SIZE) {
   const page = pdf.addPage();
-  page.setSize(COVER_PAGE_SIZE[0], COVER_PAGE_SIZE[1]);
+  page.setSize(pageSize[0], pageSize[1]);
   const font = await pdf.embedFont(StandardFonts.Helvetica);
-  drawCenteredLines(page, ['Intentionally blank'], font, 11, COVER_PAGE_SIZE[1] / 2, 16, rgb(0.56, 0.6, 0.68));
+  drawCenteredLines(page, ['Intentionally blank'], font, 11, pageSize[1] / 2, 16, rgb(0.56, 0.6, 0.68));
+}
+
+function addUserBlankPage(pdf, pageSize = COVER_PAGE_SIZE) {
+  const page = pdf.addPage();
+  page.setSize(pageSize[0], pageSize[1]);
+  return page;
+}
+
+async function addCopiedSourcePages(pdf, source, sourceIndices, item) {
+  const pages = await pdf.copyPages(source, sourceIndices);
+  pages.forEach((page) => {
+    if (item.rotation) {
+      const currentRotation = page.getRotation().angle;
+      page.setRotation(degrees((currentRotation + item.rotation) % 360));
+    }
+    pdf.addPage(page);
+  });
+  return pages;
+}
+
+async function addFittedSourcePages(pdf, source, sourceIndices, item, layoutOptions) {
+  const pages = [];
+
+  for (const sourceIndex of sourceIndices) {
+    const sourcePage = source.getPage(sourceIndex);
+    const embeddedPage = await pdf.embedPage(sourcePage);
+    const page = pdf.addPage();
+    page.setSize(layoutOptions.pageSize[0], layoutOptions.pageSize[1]);
+    drawFittedEmbeddedPage(page, embeddedPage, layoutOptions.margin);
+
+    if (item.rotation) {
+      page.setRotation(degrees(item.rotation));
+    }
+
+    pages.push(page);
+  }
+
+  return pages;
+}
+
+function drawFittedEmbeddedPage(page, embeddedPage, margin) {
+  const { width, height } = page.getSize();
+  const safeMargin = Math.min(margin, width / 3, height / 3);
+  const maxWidth = Math.max(1, width - safeMargin * 2);
+  const maxHeight = Math.max(1, height - safeMargin * 2);
+  const scale = Math.min(maxWidth / embeddedPage.width, maxHeight / embeddedPage.height);
+  const drawWidth = embeddedPage.width * scale;
+  const drawHeight = embeddedPage.height * scale;
+
+  page.drawPage(embeddedPage, {
+    x: (width - drawWidth) / 2,
+    y: (height - drawHeight) / 2,
+    width: drawWidth,
+    height: drawHeight,
+  });
 }
 
 function flattenFormFields(pdf) {
@@ -1394,6 +1490,26 @@ els.outputName.addEventListener('input', () => {
     state.notice = '';
     render();
   }
+});
+els.pageSizeMode.addEventListener('change', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
+els.layoutMargin.addEventListener('input', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
+els.blankBeforeCount.addEventListener('input', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
+els.blankAfterCount.addEventListener('input', () => {
+  clearOutput();
+  state.notice = '';
+  render();
 });
 els.coverPage.addEventListener('change', () => {
   clearOutput();
