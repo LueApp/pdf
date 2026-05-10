@@ -21,7 +21,7 @@
         <div class="panel-head">
           <div>
             <h2 id="queue-title">Queue</h2>
-            <p id="queue-note">Add PDF files to arrange the merge order.</p>
+              <p id="queue-note">Add PDF files, choose pages, and adjust rotation.</p>
           </div>
         </div>
 
@@ -45,6 +45,16 @@
           <button type="button" id="clear-btn">Clear</button>
         </div>
 
+        <div class="field-group">
+          <label for="output-name">Output filename</label>
+          <input id="output-name" type="text" value="merged.pdf" autocomplete="off" spellcheck="false">
+        </div>
+
+        <label class="check-row" for="page-numbers">
+          <input id="page-numbers" type="checkbox">
+          <span>Add page numbers</span>
+        </label>
+
         <button type="button" class="primary" id="preview-btn">Preview combination</button>
 
         <div class="status-block">
@@ -62,12 +72,12 @@
         <div class="panel-head">
           <div>
             <h2 id="preview-title">Preview</h2>
-            <p id="preview-note">Create a preview to inspect the merged PDF before downloading.</p>
+              <p id="preview-note">Create a preview to inspect the modified PDF before downloading.</p>
           </div>
         </div>
 
         <div class="preview-shell" id="preview-shell">
-          <div class="preview-placeholder" id="preview-placeholder">Merged preview will appear here.</div>
+          <div class="preview-placeholder" id="preview-placeholder">Modified preview will appear here.</div>
           <iframe id="preview-frame" title="Merged PDF preview" hidden></iframe>
         </div>
       </section>

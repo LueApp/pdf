@@ -1,4 +1,4 @@
-const { PDFDocument } = PDFLib;
+const { PDFDocument, StandardFonts, degrees, rgb } = PDFLib;
 
 const els = {
   addButton: document.getElementById('add-btn'),
@@ -9,6 +9,8 @@ const els = {
   fileInput: document.getElementById('file-input'),
   fileList: document.getElementById('file-list'),
   output: document.getElementById('output'),
+  outputName: document.getElementById('output-name'),
+  pageNumbers: document.getElementById('page-numbers'),
   previewButton: document.getElementById('preview-btn'),
   previewFrame: document.getElementById('preview-frame'),
   previewPlaceholder: document.getElementById('preview-placeholder'),
@@ -45,8 +47,21 @@ function formatBytes(bytes) {
 }
 
 function buildOutputName() {
+  const requestedName = sanitizePdfName(els.outputName.value);
+  if (requestedName) {
+    return requestedName;
+  }
+
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19).replace('T', '_');
   return `merged-${stamp}.pdf`;
+}
+
+function sanitizePdfName(value) {
+  const name = value.trim().replace(/[\\/:*?"<>|]+/g, '-');
+  if (!name || name === '.pdf') {
+    return '';
+  }
+  return name.toLowerCase().endsWith('.pdf') ? name : `${name}.pdf`;
 }
 
 function setNotice(message) {
@@ -62,6 +77,8 @@ function clearOutput() {
   state.outputSummary = '';
   state.outputName = '';
   els.previewFrame.src = 'about:blank';
+  els.previewFrame.hidden = true;
+  els.previewPlaceholder.hidden = false;
   els.output.textContent = 'No preview generated yet.';
 }
 
@@ -69,8 +86,23 @@ function totalPages() {
   return state.items.reduce((sum, item) => sum + (typeof item.pages === 'number' ? item.pages : 0), 0);
 }
 
+function selectedPagesTotal() {
+  return state.items.reduce((sum, item) => {
+    if (typeof item.pages !== 'number' || item.error) {
+      return sum;
+    }
+
+    const selection = parsePageRanges(item.range, item.pages);
+    return selection.ok ? sum + selection.indices.length : sum;
+  }, 0);
+}
+
 function hasErrors() {
   return state.items.some((item) => item.error);
+}
+
+function hasRangeErrors() {
+  return state.items.some((item) => typeof item.pages === 'number' && !parsePageRanges(item.range, item.pages).ok);
 }
 
 function countPending() {
@@ -89,12 +121,17 @@ function renderSummary() {
     return;
   }
 
+  if (hasRangeErrors()) {
+    els.summary.textContent = `${pluralize(count, 'file')} • fix page range`;
+    return;
+  }
+
   if (countPending()) {
     els.summary.textContent = `${pluralize(count, 'file')} • reading...`;
     return;
   }
 
-  els.summary.textContent = `${pluralize(count, 'file')} • ${pluralize(totalPages(), 'page')}`;
+  els.summary.textContent = `${pluralize(count, 'file')} • ${pluralize(selectedPagesTotal(), 'selected page')}`;
 }
 
 function renderStatus() {
@@ -108,6 +145,11 @@ function renderStatus() {
     return;
   }
 
+  if (hasRangeErrors()) {
+    els.status.textContent = 'Fix the highlighted page range before previewing.';
+    return;
+  }
+
   if (countPending()) {
     els.status.textContent = 'Reading file details...';
     return;
@@ -118,7 +160,7 @@ function renderStatus() {
     return;
   }
 
-  els.status.textContent = state.items.length ? 'Ready to preview.' : 'Ready.';
+  els.status.textContent = state.items.length ? 'Ready to preview modifications.' : 'Ready.';
 }
 
 function renderOutput() {
@@ -136,7 +178,7 @@ function renderOutput() {
   link.className = 'download-link';
   link.href = state.downloadUrl;
   link.download = state.outputName || 'merged.pdf';
-  link.textContent = 'Download merged PDF';
+  link.textContent = 'Download modified PDF';
 
   els.output.append(text, document.createElement('br'), link);
 }
@@ -145,7 +187,7 @@ function renderPreview() {
   if (!state.downloadUrl) {
     els.previewPlaceholder.hidden = false;
     els.previewFrame.hidden = true;
-    els.previewNote.textContent = 'Create a preview to inspect the merged PDF before downloading.';
+    els.previewNote.textContent = 'Create a preview to inspect the modified PDF before downloading.';
     return;
   }
 
@@ -159,12 +201,12 @@ function renderPreview() {
 
 function renderQueueNote() {
   if (!state.items.length) {
-    els.queueNote.textContent = 'Add PDF files to arrange the merge order.';
+    els.queueNote.textContent = 'Add PDF files, choose pages, and adjust rotation.';
     els.dropHint.textContent = 'No files selected.';
     return;
   }
 
-  const pages = countPending() ? 'reading details' : pluralize(totalPages(), 'page');
+  const pages = countPending() ? 'reading details' : `${pluralize(selectedPagesTotal(), 'selected page')} from ${pluralize(totalPages(), 'source page')}`;
   els.queueNote.textContent = `${pluralize(state.items.length, 'file')} queued • ${pages}`;
   els.dropHint.textContent = `${pluralize(state.items.length, 'file')} queued.`;
 }
@@ -211,6 +253,11 @@ function renderList() {
     meta.append(pages);
 
     textWrap.append(title, meta);
+
+    if (typeof item.pages === 'number' && !item.error) {
+      textWrap.append(buildFileOptions(item));
+    }
+
     main.append(indexBadge, textWrap);
 
     const actions = document.createElement('div');
@@ -246,13 +293,78 @@ function renderList() {
   });
 }
 
+function buildFileOptions(item) {
+  const options = document.createElement('div');
+  options.className = 'file-options';
+
+  const selection = parsePageRanges(item.range, item.pages);
+
+  const rangeField = document.createElement('label');
+  rangeField.className = 'range-field';
+
+  const rangeLabel = document.createElement('span');
+  rangeLabel.textContent = 'Pages';
+
+  const rangeInput = document.createElement('input');
+  rangeInput.type = 'text';
+  rangeInput.value = item.range;
+  rangeInput.placeholder = `All 1-${item.pages}`;
+  rangeInput.inputMode = 'text';
+  rangeInput.setAttribute('aria-label', `Page range for ${item.name}`);
+  if (!selection.ok) {
+    rangeInput.classList.add('is-invalid');
+  }
+  rangeInput.addEventListener('input', (event) => {
+    item.range = event.target.value;
+    clearOutput();
+    state.notice = '';
+  });
+  rangeInput.addEventListener('change', render);
+
+  rangeField.append(rangeLabel, rangeInput);
+
+  const helper = document.createElement('div');
+  helper.className = selection.ok ? 'field-help' : 'field-help field-error';
+  helper.textContent = selection.ok
+    ? `${pluralize(selection.indices.length, 'selected page')}`
+    : selection.error;
+
+  const rotateGroup = document.createElement('div');
+  rotateGroup.className = 'rotate-group';
+  rotateGroup.setAttribute('aria-label', `Rotation for ${item.name}`);
+
+  const rotateLabel = document.createElement('span');
+  rotateLabel.textContent = 'Rotate';
+
+  const rotateButtons = document.createElement('div');
+  rotateButtons.className = 'segmented';
+
+  [0, 90, 180, 270].forEach((value) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = value === 0 ? '0' : `${value}`;
+    button.className = item.rotation === value ? 'is-selected' : '';
+    button.setAttribute('aria-label', `Rotate ${item.name} ${value} degrees`);
+    button.disabled = state.busy;
+    button.addEventListener('click', () => updateRotation(item.id, value));
+    rotateButtons.append(button);
+  });
+
+  rotateGroup.append(rotateLabel, rotateButtons);
+
+  options.append(rangeField, rotateGroup, helper);
+  return options;
+}
+
 function renderControls() {
   const disabled = state.busy;
   els.addButton.disabled = disabled;
   els.clearButton.disabled = disabled || state.items.length === 0;
-  els.previewButton.disabled = disabled || state.items.length === 0 || hasErrors() || countPending() > 0;
+  els.previewButton.disabled = disabled || state.items.length === 0 || hasErrors() || hasRangeErrors() || countPending() > 0;
   els.previewButton.textContent = state.busy ? 'Creating preview...' : 'Preview combination';
   els.dropzone.disabled = disabled;
+  els.outputName.disabled = disabled;
+  els.pageNumbers.disabled = disabled;
 }
 
 function render() {
@@ -263,6 +375,48 @@ function render() {
   renderStatus();
   renderPreview();
   renderOutput();
+}
+
+function parsePageRanges(value, pageCount) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return {
+      ok: true,
+      indices: Array.from({ length: pageCount }, (_, index) => index),
+      error: '',
+    };
+  }
+
+  const indices = [];
+  const parts = trimmed.split(',').map((part) => part.trim()).filter(Boolean);
+
+  if (!parts.length) {
+    return { ok: false, indices: [], error: 'Enter pages like 1-3,5.' };
+  }
+
+  for (const part of parts) {
+    const match = part.match(/^(\d+)(?:-(\d+))?$/);
+    if (!match) {
+      return { ok: false, indices: [], error: 'Use numbers and ranges like 1-3,5.' };
+    }
+
+    const start = Number(match[1]);
+    const end = match[2] ? Number(match[2]) : start;
+
+    if (start < 1 || end < 1 || start > pageCount || end > pageCount) {
+      return { ok: false, indices: [], error: `Pages must be between 1 and ${pageCount}.` };
+    }
+
+    if (start > end) {
+      return { ok: false, indices: [], error: 'Range start must be before range end.' };
+    }
+
+    for (let page = start; page <= end; page += 1) {
+      indices.push(page - 1);
+    }
+  }
+
+  return { ok: true, indices, error: '' };
 }
 
 async function inspectFile(item) {
@@ -300,6 +454,8 @@ function addFiles(fileList) {
       name: file.name,
       pages: null,
       error: null,
+      range: '',
+      rotation: 0,
     };
 
     state.items.push(item);
@@ -341,6 +497,16 @@ function removeItem(id) {
   render();
 }
 
+function updateRotation(id, rotation) {
+  const item = state.items.find((entry) => entry.id === id);
+  if (!item) return;
+
+  item.rotation = rotation;
+  clearOutput();
+  state.notice = '';
+  render();
+}
+
 function clearQueue() {
   state.items = [];
   state.notice = '';
@@ -353,6 +519,12 @@ async function previewCombination() {
     return;
   }
 
+  if (hasRangeErrors()) {
+    state.notice = 'Fix the highlighted page range before previewing.';
+    render();
+    return;
+  }
+
   state.busy = true;
   render();
 
@@ -362,9 +534,24 @@ async function previewCombination() {
     for (const item of state.items) {
       const bytes = await item.file.arrayBuffer();
       const source = await PDFDocument.load(bytes);
-      const pageIndices = Array.from({ length: source.getPageCount() }, (_, index) => index);
-      const pages = await merged.copyPages(source, pageIndices);
-      pages.forEach((page) => merged.addPage(page));
+      const selection = parsePageRanges(item.range, source.getPageCount());
+
+      if (!selection.ok) {
+        throw new Error(`${item.name}: ${selection.error}`);
+      }
+
+      const pages = await merged.copyPages(source, selection.indices);
+      pages.forEach((page) => {
+        if (item.rotation) {
+          const currentRotation = page.getRotation().angle;
+          page.setRotation(degrees((currentRotation + item.rotation) % 360));
+        }
+        merged.addPage(page);
+      });
+    }
+
+    if (els.pageNumbers.checked) {
+      await addPageNumbers(merged);
     }
 
     const mergedBytes = await merged.save();
@@ -377,7 +564,7 @@ async function previewCombination() {
 
     state.downloadUrl = url;
     state.outputName = buildOutputName();
-    state.notice = `Preview ready: ${pluralize(state.items.length, 'PDF')} combined into ${pluralize(merged.getPageCount(), 'page')}.`;
+    state.notice = `Preview ready: ${pluralize(state.items.length, 'PDF')} modified into ${pluralize(merged.getPageCount(), 'page')}.`;
     state.outputSummary = `${state.outputName} • ${pluralize(merged.getPageCount(), 'page')} • ${formatBytes(blob.size)}`;
   } catch (error) {
     console.error('Failed to create PDF preview:', error);
@@ -390,6 +577,27 @@ async function previewCombination() {
     state.busy = false;
     render();
   }
+}
+
+async function addPageNumbers(pdf) {
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const pages = pdf.getPages();
+  const total = pages.length;
+
+  pages.forEach((page, index) => {
+    const label = `${index + 1} / ${total}`;
+    const size = 10;
+    const width = font.widthOfTextAtSize(label, size);
+    const { width: pageWidth } = page.getSize();
+
+    page.drawText(label, {
+      x: Math.max(24, (pageWidth - width) / 2),
+      y: 18,
+      size,
+      font,
+      color: rgb(0.22, 0.27, 0.36),
+    });
+  });
 }
 
 function openFilePicker() {
@@ -406,6 +614,18 @@ els.fileInput.addEventListener('change', (event) => {
 });
 els.clearButton.addEventListener('click', clearQueue);
 els.previewButton.addEventListener('click', previewCombination);
+els.outputName.addEventListener('input', () => {
+  if (state.downloadUrl) {
+    clearOutput();
+    state.notice = '';
+    render();
+  }
+});
+els.pageNumbers.addEventListener('change', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
 
 ['dragenter', 'dragover'].forEach((eventName) => {
   window.addEventListener(eventName, (event) => {
