@@ -656,17 +656,51 @@ async function addPageNumbers(pdf) {
   pages.forEach((page, index) => {
     const label = `${index + 1} / ${total}`;
     const size = 10;
-    const width = font.widthOfTextAtSize(label, size);
-    const { width: pageWidth } = page.getSize();
+    const placement = getPageNumberPlacement(page, font, label, size);
 
     page.drawText(label, {
-      x: Math.max(24, (pageWidth - width) / 2),
-      y: 18,
+      x: placement.x,
+      y: placement.y,
       size,
       font,
       color: rgb(0.22, 0.27, 0.36),
+      rotate: placement.rotate,
     });
   });
+}
+
+function getPageNumberPlacement(page, font, label, size) {
+  const margin = 18;
+  const rotation = normalizeRotation(page.getRotation().angle);
+  const { width, height } = page.getSize();
+  const displayWidth = rotation === 90 || rotation === 270 ? height : width;
+  const textWidth = font.widthOfTextAtSize(label, size);
+  const displayX = Math.max(margin, (displayWidth - textWidth) / 2);
+  const displayY = margin;
+  const point = pagePointFromDisplayPoint(width, height, rotation, displayX, displayY);
+
+  return {
+    x: point.x,
+    y: point.y,
+    rotate: degrees(rotation),
+  };
+}
+
+function pagePointFromDisplayPoint(width, height, rotation, displayX, displayY) {
+  switch (rotation) {
+    case 90:
+      return { x: width - displayY, y: displayX };
+    case 180:
+      return { x: width - displayX, y: height - displayY };
+    case 270:
+      return { x: displayY, y: height - displayX };
+    default:
+      return { x: displayX, y: displayY };
+  }
+}
+
+function normalizeRotation(angle) {
+  return ((Math.round(angle) % 360) + 360) % 360;
 }
 
 function openFilePicker() {
