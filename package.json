@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "build": "node scripts/build-static.mjs",
-    "deploy": "npm run build && wrangler pages deploy dist --project-name pdf-combiner"
+    "deploy": "npm run build && npm run deploy:cloudflare",
+    "deploy:cloudflare": "wrangler pages deploy dist --project-name pdf-combiner"
   },
   "devDependencies": {
     "wrangler": "^4.90.0"
