@@ -1,13 +1,21 @@
 const { PDFDocument, StandardFonts, degrees, rgb } = PDFLib;
+const COVER_PAGE_SIZE = [595.28, 841.89];
 
 const els = {
   addButton: document.getElementById('add-btn'),
   clearButton: document.getElementById('clear-btn'),
+  coverOptions: document.getElementById('cover-options'),
+  coverPage: document.getElementById('cover-page'),
+  coverSubtitle: document.getElementById('cover-subtitle'),
+  coverTitle: document.getElementById('cover-title'),
   dropzone: document.getElementById('dropzone'),
   dropHint: document.getElementById('drop-hint'),
   emptyState: document.getElementById('empty-state'),
   fileInput: document.getElementById('file-input'),
   fileList: document.getElementById('file-list'),
+  metadataAuthor: document.getElementById('metadata-author'),
+  metadataSubject: document.getElementById('metadata-subject'),
+  metadataTitle: document.getElementById('metadata-title'),
   output: document.getElementById('output'),
   outputName: document.getElementById('output-name'),
   pageNumberFormat: document.getElementById('page-number-format'),
@@ -20,6 +28,7 @@ const els = {
   previewPlaceholder: document.getElementById('preview-placeholder'),
   previewNote: document.getElementById('preview-note'),
   queueNote: document.getElementById('queue-note'),
+  separatorPages: document.getElementById('separator-pages'),
   status: document.getElementById('status'),
   summary: document.getElementById('summary'),
   watermarkAngle: document.getElementById('watermark-angle'),
@@ -74,8 +83,43 @@ function sanitizePdfName(value) {
   return name.toLowerCase().endsWith('.pdf') ? name : `${name}.pdf`;
 }
 
+function cleanTextInput(value, maxLength = 160) {
+  return value.replace(/\s+/g, ' ').trim().slice(0, maxLength);
+}
+
+function toDrawableText(value, fallback = '') {
+  const text = cleanTextInput(value).replace(/[^\x20-\x7E\xA0-\xFF]/g, '?').trim();
+  return text || fallback;
+}
+
+function stripPdfExtension(value) {
+  return value.replace(/\.pdf$/i, '');
+}
+
+function getCoverOptions() {
+  const outputName = stripPdfExtension(buildOutputName());
+  return {
+    enabled: els.coverPage.checked,
+    title: cleanTextInput(els.coverTitle.value) || outputName || 'Merged PDF',
+    subtitle: cleanTextInput(els.coverSubtitle.value),
+  };
+}
+
+function getMetadataOptions() {
+  return {
+    title: cleanTextInput(els.metadataTitle.value),
+    author: cleanTextInput(els.metadataAuthor.value),
+    subject: cleanTextInput(els.metadataSubject.value),
+  };
+}
+
+function hasMetadataOptions() {
+  const options = getMetadataOptions();
+  return Boolean(options.title || options.author || options.subject);
+}
+
 function getWatermarkOptions() {
-  const text = els.watermarkText.value.trim();
+  const text = toDrawableText(els.watermarkText.value);
   const opacity = Math.max(0, Math.min(1, Number(els.watermarkOpacity.value) / 100));
   const size = Math.max(18, Math.min(96, Number(els.watermarkSize.value)));
   const angle = Number(els.watermarkAngle.value);
@@ -100,6 +144,12 @@ function clampInteger(value, min, max, fallback) {
 
 function activeModifierLabels() {
   const labels = [];
+  if (els.coverPage.checked) {
+    labels.push('cover page');
+  }
+  if (els.separatorPages.checked && state.items.length > 1) {
+    labels.push('separator pages');
+  }
   if (els.pageNumbers.checked) {
     labels.push('page numbers');
   }
@@ -108,6 +158,9 @@ function activeModifierLabels() {
   }
   if (state.items.some((item) => item.reverse)) {
     labels.push('reversed pages');
+  }
+  if (hasMetadataOptions()) {
+    labels.push('metadata');
   }
   return labels;
 }
@@ -427,11 +480,19 @@ function renderControls() {
   els.previewButton.textContent = state.busy ? 'Creating preview...' : 'Preview combination';
   els.dropzone.disabled = disabled;
   els.outputName.disabled = disabled;
+  els.coverPage.disabled = disabled;
+  els.coverTitle.disabled = disabled || !els.coverPage.checked;
+  els.coverSubtitle.disabled = disabled || !els.coverPage.checked;
+  els.coverOptions.classList.toggle('is-disabled', disabled || !els.coverPage.checked);
+  els.separatorPages.disabled = disabled || state.items.length < 2;
   els.pageNumbers.disabled = disabled;
   els.pageNumberFormat.disabled = disabled || !els.pageNumbers.checked;
   els.pageNumberPosition.disabled = disabled || !els.pageNumbers.checked;
   els.pageNumberStart.disabled = disabled || !els.pageNumbers.checked;
   els.pageNumberOptions.classList.toggle('is-disabled', disabled || !els.pageNumbers.checked);
+  els.metadataTitle.disabled = disabled;
+  els.metadataAuthor.disabled = disabled;
+  els.metadataSubject.disabled = disabled;
   els.watermarkText.disabled = disabled;
   els.watermarkAngle.disabled = disabled;
   els.watermarkOpacity.disabled = disabled;
@@ -614,14 +675,24 @@ async function previewCombination() {
 
   try {
     const merged = await PDFDocument.create();
+    applyMetadata(merged);
 
-    for (const item of state.items) {
+    const coverOptions = getCoverOptions();
+    if (coverOptions.enabled) {
+      await addCoverPage(merged, coverOptions);
+    }
+
+    for (const [index, item] of state.items.entries()) {
       const bytes = await item.file.arrayBuffer();
       const source = await PDFDocument.load(bytes);
       const selection = parsePageRanges(item.range, source.getPageCount());
 
       if (!selection.ok) {
         throw new Error(`${item.name}: ${selection.error}`);
+      }
+
+      if (els.separatorPages.checked && index > 0) {
+        await addSeparatorPage(merged, item, index + 1, selection.indices.length);
       }
 
       const sourceIndices = item.reverse ? [...selection.indices].reverse() : selection.indices;
@@ -666,6 +737,155 @@ async function previewCombination() {
     state.busy = false;
     render();
   }
+}
+
+function applyMetadata(pdf) {
+  const options = getMetadataOptions();
+  if (options.title) {
+    pdf.setTitle(options.title);
+  }
+  if (options.author) {
+    pdf.setAuthor(options.author);
+  }
+  if (options.subject) {
+    pdf.setSubject(options.subject);
+  }
+  pdf.setCreator('PDF Combiner');
+  pdf.setProducer('PDF Combiner');
+  pdf.setCreationDate(new Date());
+  pdf.setModificationDate(new Date());
+}
+
+async function addCoverPage(pdf, options) {
+  const page = pdf.addPage();
+  page.setSize(COVER_PAGE_SIZE[0], COVER_PAGE_SIZE[1]);
+  const titleFont = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const bodyFont = await pdf.embedFont(StandardFonts.Helvetica);
+  const { width, height } = page.getSize();
+  const title = toDrawableText(options.title, 'Merged PDF');
+  const subtitle = toDrawableText(options.subtitle);
+
+  page.drawRectangle({
+    x: 0,
+    y: 0,
+    width,
+    height,
+    color: rgb(0.97, 0.98, 1),
+  });
+  page.drawRectangle({
+    x: 0,
+    y: height - 92,
+    width,
+    height: 92,
+    color: rgb(0.9, 0.94, 1),
+  });
+
+  const titleLines = wrapText(titleFont, title, 34, width - 112).slice(0, 4);
+  const titleBlockHeight = titleLines.length * 42;
+  drawCenteredLines(page, titleLines, titleFont, 34, height * 0.62 + titleBlockHeight / 2, 42, rgb(0.07, 0.13, 0.22));
+
+  if (subtitle) {
+    const subtitleLines = wrapText(bodyFont, subtitle, 15, width - 128).slice(0, 3);
+    drawCenteredLines(page, subtitleLines, bodyFont, 15, height * 0.48, 22, rgb(0.28, 0.34, 0.44));
+  }
+
+  const details = `${pluralize(state.items.length, 'file')} • ${pluralize(selectedPagesTotal(), 'selected page')}`;
+  drawCenteredLines(page, [details], bodyFont, 11, 72, 16, rgb(0.36, 0.4, 0.48));
+}
+
+async function addSeparatorPage(pdf, item, sectionNumber, selectedCount) {
+  const page = pdf.addPage();
+  page.setSize(COVER_PAGE_SIZE[0], COVER_PAGE_SIZE[1]);
+  const titleFont = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const bodyFont = await pdf.embedFont(StandardFonts.Helvetica);
+  const { width, height } = page.getSize();
+  const sectionLabel = `Section ${sectionNumber}`;
+  const fileTitle = toDrawableText(stripPdfExtension(item.name), sectionLabel);
+  const pageCount = pluralize(selectedCount, 'selected page');
+
+  page.drawRectangle({
+    x: 0,
+    y: 0,
+    width,
+    height,
+    color: rgb(0.99, 0.99, 0.98),
+  });
+  page.drawLine({
+    start: { x: 96, y: height * 0.58 },
+    end: { x: width - 96, y: height * 0.58 },
+    thickness: 1,
+    color: rgb(0.78, 0.82, 0.88),
+  });
+
+  drawCenteredLines(page, [sectionLabel], bodyFont, 13, height * 0.64, 18, rgb(0.25, 0.32, 0.42));
+  const titleLines = wrapText(titleFont, fileTitle, 26, width - 132).slice(0, 3);
+  drawCenteredLines(page, titleLines, titleFont, 26, height * 0.52 + titleLines.length * 16, 34, rgb(0.07, 0.13, 0.22));
+  drawCenteredLines(page, [pageCount], bodyFont, 11, height * 0.38, 16, rgb(0.36, 0.4, 0.48));
+}
+
+function drawCenteredLines(page, lines, font, size, startY, lineHeight, color) {
+  const { width } = page.getSize();
+  lines.forEach((line, index) => {
+    const textWidth = font.widthOfTextAtSize(line, size);
+    page.drawText(line, {
+      x: Math.max(36, (width - textWidth) / 2),
+      y: startY - index * lineHeight,
+      size,
+      font,
+      color,
+    });
+  });
+}
+
+function wrapText(font, text, size, maxWidth) {
+  const words = text.split(' ').filter(Boolean);
+  const lines = [];
+  let line = '';
+
+  words.forEach((word) => {
+    const candidate = line ? `${line} ${word}` : word;
+    if (font.widthOfTextAtSize(candidate, size) <= maxWidth) {
+      line = candidate;
+      return;
+    }
+
+    if (line) {
+      lines.push(line);
+      line = '';
+    }
+
+    if (font.widthOfTextAtSize(word, size) <= maxWidth) {
+      line = word;
+      return;
+    }
+
+    const chunks = breakLongWord(font, word, size, maxWidth);
+    lines.push(...chunks.slice(0, -1));
+    line = chunks[chunks.length - 1] || '';
+  });
+
+  if (line) {
+    lines.push(line);
+  }
+  return lines.length ? lines : [''];
+}
+
+function breakLongWord(font, word, size, maxWidth) {
+  const chunks = [];
+  let chunk = '';
+  [...word].forEach((char) => {
+    const candidate = `${chunk}${char}`;
+    if (chunk && font.widthOfTextAtSize(candidate, size) > maxWidth) {
+      chunks.push(chunk);
+      chunk = char;
+      return;
+    }
+    chunk = candidate;
+  });
+  if (chunk) {
+    chunks.push(chunk);
+  }
+  return chunks;
 }
 
 async function addWatermark(pdf) {
@@ -823,6 +1043,26 @@ els.outputName.addEventListener('input', () => {
     render();
   }
 });
+els.coverPage.addEventListener('change', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
+els.coverTitle.addEventListener('input', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
+els.coverSubtitle.addEventListener('input', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
+els.separatorPages.addEventListener('change', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
 els.pageNumbers.addEventListener('change', () => {
   clearOutput();
   state.notice = '';
@@ -849,6 +1089,21 @@ els.watermarkText.addEventListener('input', () => {
   render();
 });
 els.watermarkAngle.addEventListener('change', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
+els.metadataTitle.addEventListener('input', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
+els.metadataAuthor.addEventListener('input', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
+els.metadataSubject.addEventListener('input', () => {
   clearOutput();
   state.notice = '';
   render();

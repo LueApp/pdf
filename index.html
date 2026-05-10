@@ -50,6 +50,28 @@
           <input id="output-name" type="text" value="merged.pdf" autocomplete="off" spellcheck="false">
         </div>
 
+        <label class="check-row" for="cover-page">
+          <input id="cover-page" type="checkbox">
+          <span>Add cover page</span>
+        </label>
+
+        <div class="option-grid" id="cover-options">
+          <div class="field-group">
+            <label for="cover-title">Cover title</label>
+            <input id="cover-title" type="text" placeholder="Use output filename" autocomplete="off" spellcheck="false">
+          </div>
+
+          <div class="field-group">
+            <label for="cover-subtitle">Cover subtitle</label>
+            <input id="cover-subtitle" type="text" placeholder="Optional subtitle" autocomplete="off" spellcheck="false">
+          </div>
+        </div>
+
+        <label class="check-row" for="separator-pages">
+          <input id="separator-pages" type="checkbox">
+          <span>Add separator pages</span>
+        </label>
+
         <label class="check-row" for="page-numbers">
           <input id="page-numbers" type="checkbox">
           <span>Add page numbers</span>
@@ -110,6 +132,23 @@
             <option value="0">Horizontal</option>
             <option value="35">Diagonal right</option>
           </select>
+        </div>
+
+        <div class="option-grid metadata-grid">
+          <div class="field-group">
+            <label for="metadata-title">PDF title</label>
+            <input id="metadata-title" type="text" placeholder="Optional metadata" autocomplete="off" spellcheck="false">
+          </div>
+
+          <div class="field-group">
+            <label for="metadata-author">PDF author</label>
+            <input id="metadata-author" type="text" placeholder="Optional metadata" autocomplete="off" spellcheck="false">
+          </div>
+
+          <div class="field-group">
+            <label for="metadata-subject">PDF subject</label>
+            <input id="metadata-subject" type="text" placeholder="Optional metadata" autocomplete="off" spellcheck="false">
+          </div>
         </div>
 
         <button type="button" class="primary" id="preview-btn">Preview combination</button>
