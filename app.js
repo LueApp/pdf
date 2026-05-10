@@ -10,6 +10,10 @@ const els = {
   fileList: document.getElementById('file-list'),
   output: document.getElementById('output'),
   outputName: document.getElementById('output-name'),
+  pageNumberFormat: document.getElementById('page-number-format'),
+  pageNumberOptions: document.getElementById('page-number-options'),
+  pageNumberPosition: document.getElementById('page-number-position'),
+  pageNumberStart: document.getElementById('page-number-start'),
   pageNumbers: document.getElementById('page-numbers'),
   previewButton: document.getElementById('preview-btn'),
   previewFrame: document.getElementById('preview-frame'),
@@ -18,6 +22,7 @@ const els = {
   queueNote: document.getElementById('queue-note'),
   status: document.getElementById('status'),
   summary: document.getElementById('summary'),
+  watermarkAngle: document.getElementById('watermark-angle'),
   watermarkOpacity: document.getElementById('watermark-opacity'),
   watermarkOpacityValue: document.getElementById('watermark-opacity-value'),
   watermarkSize: document.getElementById('watermark-size'),
@@ -73,7 +78,24 @@ function getWatermarkOptions() {
   const text = els.watermarkText.value.trim();
   const opacity = Math.max(0, Math.min(1, Number(els.watermarkOpacity.value) / 100));
   const size = Math.max(18, Math.min(96, Number(els.watermarkSize.value)));
-  return { text, opacity, size };
+  const angle = Number(els.watermarkAngle.value);
+  return { text, opacity, size, angle: Number.isFinite(angle) ? angle : -35 };
+}
+
+function getPageNumberOptions() {
+  return {
+    format: els.pageNumberFormat.value,
+    position: els.pageNumberPosition.value,
+    start: clampInteger(els.pageNumberStart.value, 1, 9999, 1),
+  };
+}
+
+function clampInteger(value, min, max, fallback) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, parsed));
 }
 
 function activeModifierLabels() {
@@ -83,6 +105,9 @@ function activeModifierLabels() {
   }
   if (getWatermarkOptions().text) {
     labels.push('watermark');
+  }
+  if (state.items.some((item) => item.reverse)) {
+    labels.push('reversed pages');
   }
   return labels;
 }
@@ -375,7 +400,22 @@ function buildFileOptions(item) {
 
   rotateGroup.append(rotateLabel, rotateButtons);
 
-  options.append(rangeField, rotateGroup, helper);
+  const reverseField = document.createElement('label');
+  reverseField.className = 'mini-check';
+
+  const reverseInput = document.createElement('input');
+  reverseInput.type = 'checkbox';
+  reverseInput.checked = item.reverse;
+  reverseInput.disabled = state.busy;
+  reverseInput.setAttribute('aria-label', `Reverse selected pages for ${item.name}`);
+  reverseInput.addEventListener('change', (event) => updateReverse(item.id, event.target.checked));
+
+  const reverseLabel = document.createElement('span');
+  reverseLabel.textContent = 'Reverse selected page order';
+
+  reverseField.append(reverseInput, reverseLabel);
+
+  options.append(rangeField, rotateGroup, reverseField, helper);
   return options;
 }
 
@@ -388,7 +428,12 @@ function renderControls() {
   els.dropzone.disabled = disabled;
   els.outputName.disabled = disabled;
   els.pageNumbers.disabled = disabled;
+  els.pageNumberFormat.disabled = disabled || !els.pageNumbers.checked;
+  els.pageNumberPosition.disabled = disabled || !els.pageNumbers.checked;
+  els.pageNumberStart.disabled = disabled || !els.pageNumbers.checked;
+  els.pageNumberOptions.classList.toggle('is-disabled', disabled || !els.pageNumbers.checked);
   els.watermarkText.disabled = disabled;
+  els.watermarkAngle.disabled = disabled;
   els.watermarkOpacity.disabled = disabled;
   els.watermarkSize.disabled = disabled;
   els.watermarkOpacityValue.textContent = `${els.watermarkOpacity.value}%`;
@@ -483,6 +528,7 @@ function addFiles(fileList) {
       pages: null,
       error: null,
       range: '',
+      reverse: false,
       rotation: 0,
     };
 
@@ -535,6 +581,16 @@ function updateRotation(id, rotation) {
   render();
 }
 
+function updateReverse(id, reverse) {
+  const item = state.items.find((entry) => entry.id === id);
+  if (!item) return;
+
+  item.reverse = reverse;
+  clearOutput();
+  state.notice = '';
+  render();
+}
+
 function clearQueue() {
   state.items = [];
   state.notice = '';
@@ -568,7 +624,8 @@ async function previewCombination() {
         throw new Error(`${item.name}: ${selection.error}`);
       }
 
-      const pages = await merged.copyPages(source, selection.indices);
+      const sourceIndices = item.reverse ? [...selection.indices].reverse() : selection.indices;
+      const pages = await merged.copyPages(source, sourceIndices);
       pages.forEach((page) => {
         if (item.rotation) {
           const currentRotation = page.getRotation().angle;
@@ -621,20 +678,36 @@ async function addWatermark(pdf) {
   const pages = pdf.getPages();
 
   pages.forEach((page) => {
-    const { width, height } = page.getSize();
-    const size = fitWatermarkSize(font, options.text, options.size, width, height);
-    const textWidth = font.widthOfTextAtSize(options.text, size);
+    const displaySize = getDisplaySize(page);
+    const size = fitWatermarkSize(font, options.text, options.size, displaySize.width, displaySize.height);
+    const placement = getWatermarkPlacement(page, font, options.text, size, options.angle);
 
     page.drawText(options.text, {
-      x: (width - textWidth) / 2,
-      y: height / 2,
+      x: placement.x,
+      y: placement.y,
       size,
       font,
       color: rgb(0.16, 0.2, 0.28),
       opacity: options.opacity,
-      rotate: degrees(-35),
+      rotate: placement.rotate,
     });
   });
+}
+
+function getWatermarkPlacement(page, font, text, size, angle) {
+  const { width, height } = page.getSize();
+  const rotation = normalizeRotation(page.getRotation().angle);
+  const displaySize = getDisplaySize(page);
+  const textWidth = font.widthOfTextAtSize(text, size);
+  const displayX = Math.max(0, (displaySize.width - textWidth) / 2);
+  const displayY = Math.max(0, (displaySize.height - size) / 2);
+  const point = pagePointFromDisplayPoint(width, height, rotation, displayX, displayY);
+
+  return {
+    x: point.x,
+    y: point.y,
+    rotate: degrees(rotation + angle),
+  };
 }
 
 function fitWatermarkSize(font, text, requestedSize, pageWidth, pageHeight) {
@@ -652,11 +725,13 @@ async function addPageNumbers(pdf) {
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const pages = pdf.getPages();
   const total = pages.length;
+  const options = getPageNumberOptions();
 
   pages.forEach((page, index) => {
-    const label = `${index + 1} / ${total}`;
+    const pageNumber = options.start + index;
+    const label = formatPageNumber(pageNumber, options.start + total - 1, options.format);
     const size = 10;
-    const placement = getPageNumberPlacement(page, font, label, size);
+    const placement = getPageNumberPlacement(page, font, label, size, options.position);
 
     page.drawText(label, {
       x: placement.x,
@@ -669,14 +744,30 @@ async function addPageNumbers(pdf) {
   });
 }
 
-function getPageNumberPlacement(page, font, label, size) {
+function formatPageNumber(pageNumber, total, format) {
+  if (format === 'page-current') {
+    return `Page ${pageNumber}`;
+  }
+  if (format === 'current') {
+    return String(pageNumber);
+  }
+  return `${pageNumber} / ${total}`;
+}
+
+function getPageNumberPlacement(page, font, label, size, position) {
   const margin = 18;
+  const placement = position || 'bottom-center';
   const rotation = normalizeRotation(page.getRotation().angle);
   const { width, height } = page.getSize();
-  const displayWidth = rotation === 90 || rotation === 270 ? height : width;
+  const displaySize = getDisplaySize(page);
   const textWidth = font.widthOfTextAtSize(label, size);
-  const displayX = Math.max(margin, (displayWidth - textWidth) / 2);
-  const displayY = margin;
+  const alignRight = placement.endsWith('right');
+  const alignTop = placement.startsWith('top');
+  const centeredX = (displaySize.width - textWidth) / 2;
+  const rightX = displaySize.width - margin - textWidth;
+  const topY = displaySize.height - margin - size;
+  const displayX = Math.max(margin, alignRight ? rightX : centeredX);
+  const displayY = Math.max(margin, alignTop ? topY : margin);
   const point = pagePointFromDisplayPoint(width, height, rotation, displayX, displayY);
 
   return {
@@ -684,6 +775,14 @@ function getPageNumberPlacement(page, font, label, size) {
     y: point.y,
     rotate: degrees(rotation),
   };
+}
+
+function getDisplaySize(page) {
+  const { width, height } = page.getSize();
+  const rotation = normalizeRotation(page.getRotation().angle);
+  return rotation === 90 || rotation === 270
+    ? { width: height, height: width }
+    : { width, height };
 }
 
 function pagePointFromDisplayPoint(width, height, rotation, displayX, displayY) {
@@ -729,7 +828,27 @@ els.pageNumbers.addEventListener('change', () => {
   state.notice = '';
   render();
 });
+els.pageNumberFormat.addEventListener('change', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
+els.pageNumberPosition.addEventListener('change', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
+els.pageNumberStart.addEventListener('input', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
 els.watermarkText.addEventListener('input', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
+els.watermarkAngle.addEventListener('change', () => {
   clearOutput();
   state.notice = '';
   render();

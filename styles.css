@@ -40,7 +40,9 @@ select {
   font: inherit;
 }
 
-input[type="text"] {
+input[type="text"],
+input[type="number"],
+select {
   width: 100%;
   min-height: 2.7rem;
   border: 1px solid var(--line);
@@ -52,7 +54,18 @@ input[type="text"] {
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-input[type="text"]:focus {
+select {
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 18px) 50%, calc(100% - 13px) 50%;
+  background-repeat: no-repeat;
+  background-size: 5px 5px, 5px 5px;
+  padding-right: 2.4rem;
+}
+
+input[type="text"]:focus,
+input[type="number"]:focus,
+select:focus {
   border-color: rgba(36, 87, 214, 0.6);
   box-shadow: 0 0 0 3px rgba(36, 87, 214, 0.12);
 }
@@ -260,6 +273,24 @@ button:disabled {
   gap: 8px;
 }
 
+.option-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-alt);
+}
+
+.option-grid .field-group:last-child {
+  grid-column: 1 / -1;
+}
+
+.option-grid.is-disabled {
+  opacity: 0.62;
+}
+
 .slider-head {
   display: flex;
   align-items: baseline;
@@ -293,6 +324,22 @@ button:disabled {
 .field-error {
   color: var(--danger) !important;
   font-weight: 600;
+}
+
+.mini-check {
+  grid-column: 1 / -1;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 2rem;
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.mini-check input {
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--accent);
 }
 
 .segmented {
@@ -555,6 +602,10 @@ button:disabled {
   }
 
   .button-row {
+    grid-template-columns: 1fr;
+  }
+
+  .option-grid {
     grid-template-columns: 1fr;
   }
 }

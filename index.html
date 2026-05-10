@@ -55,6 +55,32 @@
           <span>Add page numbers</span>
         </label>
 
+        <div class="option-grid" id="page-number-options">
+          <div class="field-group">
+            <label for="page-number-format">Number format</label>
+            <select id="page-number-format">
+              <option value="current-total">1 / 12</option>
+              <option value="page-current">Page 1</option>
+              <option value="current">1</option>
+            </select>
+          </div>
+
+          <div class="field-group">
+            <label for="page-number-position">Number position</label>
+            <select id="page-number-position">
+              <option value="bottom-center">Bottom center</option>
+              <option value="bottom-right">Bottom right</option>
+              <option value="top-center">Top center</option>
+              <option value="top-right">Top right</option>
+            </select>
+          </div>
+
+          <div class="field-group">
+            <label for="page-number-start">Start number</label>
+            <input id="page-number-start" type="number" min="1" max="9999" value="1" inputmode="numeric">
+          </div>
+        </div>
+
         <div class="field-group">
           <label for="watermark-text">Watermark text</label>
           <input id="watermark-text" type="text" placeholder="Optional stamp" autocomplete="off" spellcheck="false">
@@ -75,6 +101,15 @@
             <span id="watermark-size-value">48 pt</span>
           </div>
           <input id="watermark-size" type="range" min="18" max="96" value="48">
+        </div>
+
+        <div class="field-group">
+          <label for="watermark-angle">Watermark angle</label>
+          <select id="watermark-angle">
+            <option value="-35">Diagonal left</option>
+            <option value="0">Horizontal</option>
+            <option value="35">Diagonal right</option>
+          </select>
         </div>
 
         <button type="button" class="primary" id="preview-btn">Preview combination</button>
