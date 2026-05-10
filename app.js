@@ -1,5 +1,6 @@
 const { PDFDocument, StandardFonts, degrees, rgb } = PDFLib;
 const COVER_PAGE_SIZE = [595.28, 841.89];
+const TOC_ENTRIES_PER_PAGE = 24;
 
 const els = {
   addButton: document.getElementById('add-btn'),
@@ -10,9 +11,11 @@ const els = {
   coverTitle: document.getElementById('cover-title'),
   dropzone: document.getElementById('dropzone'),
   dropHint: document.getElementById('drop-hint'),
+  duplexBlanks: document.getElementById('duplex-blanks'),
   emptyState: document.getElementById('empty-state'),
   fileInput: document.getElementById('file-input'),
   fileList: document.getElementById('file-list'),
+  flattenForms: document.getElementById('flatten-forms'),
   metadataAuthor: document.getElementById('metadata-author'),
   metadataSubject: document.getElementById('metadata-subject'),
   metadataTitle: document.getElementById('metadata-title'),
@@ -31,6 +34,9 @@ const els = {
   separatorPages: document.getElementById('separator-pages'),
   status: document.getElementById('status'),
   summary: document.getElementById('summary'),
+  tocOptions: document.getElementById('toc-options'),
+  tocPage: document.getElementById('toc-page'),
+  tocTitle: document.getElementById('toc-title'),
   watermarkAngle: document.getElementById('watermark-angle'),
   watermarkOpacity: document.getElementById('watermark-opacity'),
   watermarkOpacityValue: document.getElementById('watermark-opacity-value'),
@@ -105,6 +111,13 @@ function getCoverOptions() {
   };
 }
 
+function getTocOptions() {
+  return {
+    enabled: els.tocPage.checked,
+    title: cleanTextInput(els.tocTitle.value) || 'Table of contents',
+  };
+}
+
 function getMetadataOptions() {
   return {
     title: cleanTextInput(els.metadataTitle.value),
@@ -149,6 +162,15 @@ function activeModifierLabels() {
   }
   if (els.separatorPages.checked && state.items.length > 1) {
     labels.push('separator pages');
+  }
+  if (els.tocPage.checked) {
+    labels.push('table of contents');
+  }
+  if (els.duplexBlanks.checked && state.items.length > 1) {
+    labels.push('duplex blanks');
+  }
+  if (els.flattenForms.checked) {
+    labels.push('flattened forms');
   }
   if (els.pageNumbers.checked) {
     labels.push('page numbers');
@@ -196,6 +218,44 @@ function selectedPagesTotal() {
     const selection = parsePageRanges(item.range, item.pages);
     return selection.ok ? sum + selection.indices.length : sum;
   }, 0);
+}
+
+function getTocPageCount() {
+  return Math.max(1, Math.ceil(state.items.length / TOC_ENTRIES_PER_PAGE));
+}
+
+function buildAssemblyPlan(frontPageCount) {
+  let pageCount = frontPageCount;
+
+  return state.items.map((item, index) => {
+    const selection = parsePageRanges(item.range, item.pages);
+    const selectedCount = selection.ok ? selection.indices.length : 0;
+    const blankBefore = index > 0 && els.duplexBlanks.checked && pageCount % 2 === 1;
+
+    if (blankBefore) {
+      pageCount += 1;
+    }
+
+    const separatorPage = index > 0 && els.separatorPages.checked ? pageCount + 1 : null;
+    if (separatorPage) {
+      pageCount += 1;
+    }
+
+    const startPage = pageCount + 1;
+    pageCount += selectedCount;
+
+    return {
+      item,
+      index,
+      selectedCount,
+      indices: selection.ok ? selection.indices : [],
+      rangeLabel: item.range.trim() || `All 1-${item.pages}`,
+      blankBefore,
+      separatorPage,
+      startPage,
+      sectionStartPage: separatorPage || startPage,
+    };
+  });
 }
 
 function hasErrors() {
@@ -485,6 +545,11 @@ function renderControls() {
   els.coverSubtitle.disabled = disabled || !els.coverPage.checked;
   els.coverOptions.classList.toggle('is-disabled', disabled || !els.coverPage.checked);
   els.separatorPages.disabled = disabled || state.items.length < 2;
+  els.tocPage.disabled = disabled;
+  els.tocTitle.disabled = disabled || !els.tocPage.checked;
+  els.tocOptions.classList.toggle('is-disabled', disabled || !els.tocPage.checked);
+  els.duplexBlanks.disabled = disabled || state.items.length < 2;
+  els.flattenForms.disabled = disabled;
   els.pageNumbers.disabled = disabled;
   els.pageNumberFormat.disabled = disabled || !els.pageNumbers.checked;
   els.pageNumberPosition.disabled = disabled || !els.pageNumbers.checked;
@@ -678,21 +743,38 @@ async function previewCombination() {
     applyMetadata(merged);
 
     const coverOptions = getCoverOptions();
+    const tocOptions = getTocOptions();
+    const tocPageCount = tocOptions.enabled ? getTocPageCount() : 0;
+    const frontPageCount = (coverOptions.enabled ? 1 : 0) + tocPageCount;
+    const assemblyPlan = buildAssemblyPlan(frontPageCount);
+
     if (coverOptions.enabled) {
       await addCoverPage(merged, coverOptions);
     }
 
-    for (const [index, item] of state.items.entries()) {
+    if (tocOptions.enabled) {
+      await addTableOfContents(merged, tocOptions, assemblyPlan);
+    }
+
+    for (const section of assemblyPlan) {
+      const { item } = section;
       const bytes = await item.file.arrayBuffer();
       const source = await PDFDocument.load(bytes);
-      const selection = parsePageRanges(item.range, source.getPageCount());
+      if (els.flattenForms.checked) {
+        flattenFormFields(source);
+      }
 
+      const selection = parsePageRanges(item.range, source.getPageCount());
       if (!selection.ok) {
         throw new Error(`${item.name}: ${selection.error}`);
       }
 
-      if (els.separatorPages.checked && index > 0) {
-        await addSeparatorPage(merged, item, index + 1, selection.indices.length);
+      if (section.blankBefore) {
+        await addDuplexBlankPage(merged);
+      }
+
+      if (section.separatorPage) {
+        await addSeparatorPage(merged, item, section.index + 1, selection.indices.length);
       }
 
       const sourceIndices = item.reverse ? [...selection.indices].reverse() : selection.indices;
@@ -793,6 +875,106 @@ async function addCoverPage(pdf, options) {
   drawCenteredLines(page, [details], bodyFont, 11, 72, 16, rgb(0.36, 0.4, 0.48));
 }
 
+async function addTableOfContents(pdf, options, entries) {
+  const titleFont = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const bodyFont = await pdf.embedFont(StandardFonts.Helvetica);
+  const title = toDrawableText(options.title, 'Table of contents');
+  const pageCount = getTocPageCount();
+
+  for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
+    const page = pdf.addPage();
+    page.setSize(COVER_PAGE_SIZE[0], COVER_PAGE_SIZE[1]);
+    const { width, height } = page.getSize();
+    const sliceStart = pageIndex * TOC_ENTRIES_PER_PAGE;
+    const pageEntries = entries.slice(sliceStart, sliceStart + TOC_ENTRIES_PER_PAGE);
+
+    page.drawRectangle({
+      x: 0,
+      y: 0,
+      width,
+      height,
+      color: rgb(0.98, 0.99, 1),
+    });
+    page.drawText(pageIndex === 0 ? title : `${title} continued`, {
+      x: 54,
+      y: height - 76,
+      size: 24,
+      font: titleFont,
+      color: rgb(0.07, 0.13, 0.22),
+    });
+    page.drawText('Start', {
+      x: width - 92,
+      y: height - 116,
+      size: 9,
+      font: titleFont,
+      color: rgb(0.32, 0.38, 0.48),
+    });
+    page.drawText('Pages', {
+      x: width - 154,
+      y: height - 116,
+      size: 9,
+      font: titleFont,
+      color: rgb(0.32, 0.38, 0.48),
+    });
+    page.drawLine({
+      start: { x: 54, y: height - 126 },
+      end: { x: width - 54, y: height - 126 },
+      thickness: 1,
+      color: rgb(0.78, 0.82, 0.88),
+    });
+
+    pageEntries.forEach((entry, index) => {
+      const y = height - 154 - index * 26;
+      const titleText = truncateText(bodyFont, toDrawableText(stripPdfExtension(entry.item.name), `Section ${entry.index + 1}`), 11, width - 240);
+      const detailText = truncateText(bodyFont, entry.rangeLabel, 8, width - 240);
+
+      page.drawText(String(entry.index + 1).padStart(2, '0'), {
+        x: 54,
+        y,
+        size: 10,
+        font: titleFont,
+        color: rgb(0.14, 0.22, 0.34),
+      });
+      page.drawText(titleText, {
+        x: 86,
+        y,
+        size: 11,
+        font: bodyFont,
+        color: rgb(0.07, 0.13, 0.22),
+      });
+      page.drawText(detailText, {
+        x: 86,
+        y: y - 11,
+        size: 8,
+        font: bodyFont,
+        color: rgb(0.38, 0.44, 0.54),
+      });
+      page.drawText(String(entry.selectedCount), {
+        x: width - 148,
+        y,
+        size: 10,
+        font: bodyFont,
+        color: rgb(0.14, 0.22, 0.34),
+      });
+      page.drawText(String(entry.sectionStartPage), {
+        x: width - 86,
+        y,
+        size: 10,
+        font: bodyFont,
+        color: rgb(0.14, 0.22, 0.34),
+      });
+    });
+
+    page.drawText(`${pageIndex + 1} / ${pageCount}`, {
+      x: width - 78,
+      y: 42,
+      size: 9,
+      font: bodyFont,
+      color: rgb(0.38, 0.44, 0.54),
+    });
+  }
+}
+
 async function addSeparatorPage(pdf, item, sectionNumber, selectedCount) {
   const page = pdf.addPage();
   page.setSize(COVER_PAGE_SIZE[0], COVER_PAGE_SIZE[1]);
@@ -821,6 +1003,24 @@ async function addSeparatorPage(pdf, item, sectionNumber, selectedCount) {
   const titleLines = wrapText(titleFont, fileTitle, 26, width - 132).slice(0, 3);
   drawCenteredLines(page, titleLines, titleFont, 26, height * 0.52 + titleLines.length * 16, 34, rgb(0.07, 0.13, 0.22));
   drawCenteredLines(page, [pageCount], bodyFont, 11, height * 0.38, 16, rgb(0.36, 0.4, 0.48));
+}
+
+async function addDuplexBlankPage(pdf) {
+  const page = pdf.addPage();
+  page.setSize(COVER_PAGE_SIZE[0], COVER_PAGE_SIZE[1]);
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  drawCenteredLines(page, ['Intentionally blank'], font, 11, COVER_PAGE_SIZE[1] / 2, 16, rgb(0.56, 0.6, 0.68));
+}
+
+function flattenFormFields(pdf) {
+  try {
+    const form = pdf.getForm();
+    if (form.getFields().length) {
+      form.flatten();
+    }
+  } catch (error) {
+    console.warn('Could not flatten form fields:', error);
+  }
 }
 
 function drawCenteredLines(page, lines, font, size, startY, lineHeight, color) {
@@ -868,6 +1068,19 @@ function wrapText(font, text, size, maxWidth) {
     lines.push(line);
   }
   return lines.length ? lines : [''];
+}
+
+function truncateText(font, text, size, maxWidth) {
+  if (font.widthOfTextAtSize(text, size) <= maxWidth) {
+    return text;
+  }
+
+  const ellipsis = '...';
+  let trimmed = text;
+  while (trimmed.length > 0 && font.widthOfTextAtSize(`${trimmed}${ellipsis}`, size) > maxWidth) {
+    trimmed = trimmed.slice(0, -1);
+  }
+  return trimmed ? `${trimmed}${ellipsis}` : ellipsis;
 }
 
 function breakLongWord(font, word, size, maxWidth) {
@@ -1059,6 +1272,26 @@ els.coverSubtitle.addEventListener('input', () => {
   render();
 });
 els.separatorPages.addEventListener('change', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
+els.tocPage.addEventListener('change', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
+els.tocTitle.addEventListener('input', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
+els.duplexBlanks.addEventListener('change', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
+els.flattenForms.addEventListener('change', () => {
   clearOutput();
   state.notice = '';
   render();
