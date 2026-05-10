@@ -213,6 +213,12 @@ function activeModifierLabels() {
   if (toolMode === 'remove') {
     labels.push('removed pages');
   }
+  if (toolMode === 'rotate') {
+    labels.push('rotated pages');
+  }
+  if (toolMode === 'duplicate') {
+    labels.push('duplicated pages');
+  }
   const layoutOptions = getLayoutOptions();
   if (layoutOptions.sizeMode !== 'original') {
     labels.push(`${layoutOptions.sizeMode.toUpperCase()} page fit`);
@@ -279,14 +285,25 @@ function totalPages() {
 }
 
 function selectedPagesTotal() {
+  const toolMode = getToolMode();
   return state.items.reduce((sum, item) => {
     if (typeof item.pages !== 'number' || item.error) {
       return sum;
     }
 
-    const selection = resolvePageSelection(item.range, item.pages, getToolMode());
-    return selection.ok ? sum + selection.indices.length : sum;
+    const selection = resolvePageSelection(item.range, item.pages, toolMode);
+    if (!selection.ok) {
+      return sum;
+    }
+    return sum + selection.indices.length;
   }, 0);
+}
+
+function formatSelectionTotal(count, mode) {
+  if (mode === 'remove' || mode === 'rotate' || mode === 'duplicate') {
+    return pluralize(count, 'output page');
+  }
+  return pluralize(count, 'selected page');
 }
 
 function getTocPageCount() {
@@ -320,6 +337,10 @@ function buildAssemblyPlan(frontPageCount) {
       index,
       selectedCount,
       indices: selection.ok ? selection.indices : [],
+      rotatedSet: selection.ok ? selection.rotatedSet : new Set(),
+      duplicatedSet: selection.ok ? selection.duplicatedSet : new Set(),
+      rotatedCount: selection.ok ? selection.rotatedCount : 0,
+      duplicatedCount: selection.ok ? selection.duplicatedCount : 0,
       rangeLabel: item.range.trim() || getRangePlaceholder(toolMode, item.pages),
       blankBefore,
       separatorPage,
@@ -363,7 +384,7 @@ function renderSummary() {
     return;
   }
 
-  els.summary.textContent = `${pluralize(count, 'file')} • ${pluralize(selectedPagesTotal(), 'selected page')}`;
+  els.summary.textContent = `${pluralize(count, 'file')} • ${formatSelectionTotal(selectedPagesTotal(), getToolMode())}`;
 }
 
 function renderStatus() {
@@ -440,7 +461,7 @@ function renderQueueNote() {
     return;
   }
 
-  const pages = countPending() ? 'reading details' : `${pluralize(selectedPagesTotal(), 'selected page')} from ${pluralize(totalPages(), 'source page')}`;
+  const pages = countPending() ? 'reading details' : `${formatSelectionTotal(selectedPagesTotal(), toolMode)} from ${pluralize(totalPages(), 'source page')}`;
   els.queueNote.textContent = `${pluralize(state.items.length, 'file')} queued • ${pages} • ${getToolActionLabel(toolMode)}`;
   els.dropHint.textContent = `${pluralize(state.items.length, 'file')} queued.`;
 }
@@ -452,6 +473,12 @@ function getToolNoun(mode) {
   if (mode === 'remove') {
     return 'page removal';
   }
+  if (mode === 'rotate') {
+    return 'rotation';
+  }
+  if (mode === 'duplicate') {
+    return 'duplication';
+  }
   return 'combination';
 }
 
@@ -461,6 +488,12 @@ function getToolActionLabel(mode) {
   }
   if (mode === 'remove') {
     return 'remove selected pages';
+  }
+  if (mode === 'rotate') {
+    return 'rotate selected pages';
+  }
+  if (mode === 'duplicate') {
+    return 'duplicate selected pages';
   }
   return 'combine and modify';
 }
@@ -472,6 +505,12 @@ function getOutputVerb(mode) {
   if (mode === 'remove') {
     return 'filtered';
   }
+  if (mode === 'rotate') {
+    return 'rotated';
+  }
+  if (mode === 'duplicate') {
+    return 'duplicated';
+  }
   return 'modified';
 }
 
@@ -481,6 +520,12 @@ function getEmptyQueueText(mode) {
   }
   if (mode === 'remove') {
     return 'Add PDF files and choose the pages to remove.';
+  }
+  if (mode === 'rotate') {
+    return 'Add PDF files, choose pages, and set the rotation.';
+  }
+  if (mode === 'duplicate') {
+    return 'Add PDF files and choose pages to duplicate.';
   }
   return 'Add PDF files, choose pages, and adjust rotation.';
 }
@@ -607,7 +652,7 @@ function buildFileOptions(item) {
   rotateGroup.setAttribute('aria-label', `Rotation for ${item.name}`);
 
   const rotateLabel = document.createElement('span');
-  rotateLabel.textContent = 'Rotate';
+  rotateLabel.textContent = toolMode === 'rotate' ? 'Rotate selected' : 'Rotate';
 
   const rotateButtons = document.createElement('div');
   rotateButtons.className = 'segmented';
@@ -636,7 +681,9 @@ function buildFileOptions(item) {
   reverseInput.addEventListener('change', (event) => updateReverse(item.id, event.target.checked));
 
   const reverseLabel = document.createElement('span');
-  reverseLabel.textContent = 'Reverse selected page order';
+  reverseLabel.textContent = toolMode === 'combine' || toolMode === 'extract'
+    ? 'Reverse selected page order'
+    : 'Reverse output page order';
 
   reverseField.append(reverseInput, reverseLabel);
 
@@ -651,12 +698,21 @@ function getRangeLabel(mode) {
   if (mode === 'remove') {
     return 'Remove pages';
   }
+  if (mode === 'rotate') {
+    return 'Rotate pages';
+  }
+  if (mode === 'duplicate') {
+    return 'Duplicate pages';
+  }
   return 'Pages';
 }
 
 function getRangePlaceholder(mode, pages) {
   if (mode === 'remove') {
     return 'None';
+  }
+  if (mode === 'rotate' || mode === 'duplicate') {
+    return `All 1-${pages}`;
   }
   return `All 1-${pages}`;
 }
@@ -668,6 +724,12 @@ function getRangeHelperText(selection, mode) {
   if (mode === 'extract') {
     return `${pluralize(selection.indices.length, 'page')} extracted`;
   }
+  if (mode === 'rotate') {
+    return `${pluralize(selection.rotatedCount, 'page')} selected for rotation`;
+  }
+  if (mode === 'duplicate') {
+    return `${pluralize(selection.duplicatedCount, 'page')} duplicated • ${pluralize(selection.indices.length, 'output page')}`;
+  }
   return `${pluralize(selection.indices.length, 'selected page')}`;
 }
 
@@ -677,6 +739,12 @@ function getPreviewButtonText(mode) {
   }
   if (mode === 'remove') {
     return 'Preview page removal';
+  }
+  if (mode === 'rotate') {
+    return 'Preview rotation';
+  }
+  if (mode === 'duplicate') {
+    return 'Preview duplication';
   }
   return 'Preview combination';
 }
@@ -805,25 +873,72 @@ function resolvePageSelection(value, pageCount, mode) {
       ok: true,
       indices: Array.from({ length: pageCount }, (_, index) => index),
       removedCount: 0,
+      rotatedSet: new Set(),
+      duplicatedSet: new Set(),
+      rotatedCount: 0,
+      duplicatedCount: 0,
       error: '',
     };
   }
 
   const selection = parsePageRanges(value, pageCount);
+  const selectedSet = selection.ok ? new Set(selection.indices) : new Set();
+  if (selection.ok && mode === 'rotate') {
+    return {
+      ok: true,
+      indices: Array.from({ length: pageCount }, (_, index) => index),
+      removedCount: 0,
+      rotatedSet: selectedSet,
+      duplicatedSet: new Set(),
+      rotatedCount: selectedSet.size,
+      duplicatedCount: 0,
+      error: '',
+    };
+  }
+
+  if (selection.ok && mode === 'duplicate') {
+    const indices = [];
+    for (let index = 0; index < pageCount; index += 1) {
+      indices.push(index);
+      if (selectedSet.has(index)) {
+        indices.push(index);
+      }
+    }
+
+    return {
+      ok: true,
+      indices,
+      removedCount: 0,
+      rotatedSet: new Set(),
+      duplicatedSet: selectedSet,
+      rotatedCount: 0,
+      duplicatedCount: selectedSet.size,
+      error: '',
+    };
+  }
+
   if (!selection.ok || mode !== 'remove') {
     return {
       ...selection,
       removedCount: 0,
+      rotatedSet: new Set(),
+      duplicatedSet: new Set(),
+      rotatedCount: 0,
+      duplicatedCount: 0,
     };
   }
 
-  const removed = new Set(selection.indices);
+  const removed = selectedSet;
   const indices = Array.from({ length: pageCount }, (_, index) => index).filter((index) => !removed.has(index));
 
   return {
     ok: true,
     indices,
     removedCount: removed.size,
+    rotatedSet: new Set(),
+    duplicatedSet: new Set(),
+    rotatedCount: 0,
+    duplicatedCount: 0,
     error: '',
   };
 }
@@ -1004,9 +1119,10 @@ async function previewCombination() {
       }
 
       const sourceIndices = item.reverse ? [...selection.indices].reverse() : selection.indices;
+      const rotationForSourcePage = (sourceIndex) => getOutputPageRotation(item, selection, sourceIndex, toolMode);
       const addedPages = layoutOptions.sizeMode === 'original'
-        ? await addCopiedSourcePages(merged, source, sourceIndices, item)
-        : await addFittedSourcePages(merged, source, sourceIndices, item, layoutOptions);
+        ? await addCopiedSourcePages(merged, source, sourceIndices, rotationForSourcePage)
+        : await addFittedSourcePages(merged, source, sourceIndices, layoutOptions, rotationForSourcePage);
 
       addedPages.forEach((page, pageIndex) => {
         pageInfos.push({
@@ -1265,30 +1381,43 @@ function addUserBlankPage(pdf, pageSize = COVER_PAGE_SIZE) {
   return page;
 }
 
-async function addCopiedSourcePages(pdf, source, sourceIndices, item) {
+function getOutputPageRotation(item, selection, sourceIndex, toolMode) {
+  if (!item.rotation) {
+    return 0;
+  }
+  if (toolMode === 'rotate' && !selection.rotatedSet.has(sourceIndex)) {
+    return 0;
+  }
+  return item.rotation;
+}
+
+async function addCopiedSourcePages(pdf, source, sourceIndices, getRotation) {
   const pages = await pdf.copyPages(source, sourceIndices);
-  pages.forEach((page) => {
-    if (item.rotation) {
+  pages.forEach((page, index) => {
+    const rotation = getRotation(sourceIndices[index], index);
+    if (rotation) {
       const currentRotation = page.getRotation().angle;
-      page.setRotation(degrees((currentRotation + item.rotation) % 360));
+      page.setRotation(degrees(normalizeRotation(currentRotation + rotation)));
     }
     pdf.addPage(page);
   });
   return pages;
 }
 
-async function addFittedSourcePages(pdf, source, sourceIndices, item, layoutOptions) {
+async function addFittedSourcePages(pdf, source, sourceIndices, layoutOptions, getRotation) {
   const pages = [];
 
-  for (const sourceIndex of sourceIndices) {
+  for (let index = 0; index < sourceIndices.length; index += 1) {
+    const sourceIndex = sourceIndices[index];
     const sourcePage = source.getPage(sourceIndex);
     const embeddedPage = await pdf.embedPage(sourcePage);
     const page = pdf.addPage();
     page.setSize(layoutOptions.pageSize[0], layoutOptions.pageSize[1]);
     drawFittedEmbeddedPage(page, embeddedPage, layoutOptions.margin);
 
-    if (item.rotation) {
-      page.setRotation(degrees(item.rotation));
+    const rotation = getRotation(sourceIndex, index);
+    if (rotation) {
+      page.setRotation(degrees(rotation));
     }
 
     pages.push(page);

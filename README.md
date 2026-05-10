@@ -7,6 +7,8 @@ Static browser-only PDF toolbox for Cloudflare.
 - Merge PDFs in the browser
 - Extract selected pages into a new PDF
 - Remove selected pages from PDFs
+- Rotate selected pages while leaving the rest of each PDF in place
+- Duplicate selected pages inside each PDF
 - Select page ranges per input file
 - Rotate individual inputs
 - Reverse selected pages per input file
