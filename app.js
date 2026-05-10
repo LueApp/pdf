@@ -43,6 +43,7 @@ const els = {
   previewFrame: document.getElementById('preview-frame'),
   previewPlaceholder: document.getElementById('preview-placeholder'),
   previewNote: document.getElementById('preview-note'),
+  previewTitle: document.getElementById('preview-title'),
   queueNote: document.getElementById('queue-note'),
   separatorPages: document.getElementById('separator-pages'),
   sourceLabelOptions: document.getElementById('source-label-options'),
@@ -65,6 +66,7 @@ const els = {
 const state = {
   items: [],
   nextId: 1,
+  activeItemId: null,
   busy: false,
   notice: '',
   downloadUrl: null,
@@ -274,10 +276,55 @@ function clearOutput() {
   }
   state.outputSummary = '';
   state.outputName = '';
-  els.previewFrame.src = 'about:blank';
-  els.previewFrame.hidden = true;
-  els.previewPlaceholder.hidden = false;
   els.output.textContent = 'No preview generated yet.';
+  syncPreviewFrame();
+}
+
+function syncPreviewFrame() {
+  const activeItem = getActiveItem();
+  const previewUrl = state.downloadUrl || activeItem?.previewUrl || '';
+
+  if (!previewUrl) {
+    els.previewFrame.src = 'about:blank';
+    els.previewFrame.hidden = true;
+    els.previewPlaceholder.hidden = false;
+    return;
+  }
+
+  els.previewPlaceholder.hidden = true;
+  els.previewFrame.hidden = false;
+  if (els.previewFrame.src !== previewUrl) {
+    els.previewFrame.src = previewUrl;
+  }
+}
+
+function getActiveItem() {
+  if (!state.items.length) {
+    return null;
+  }
+  return state.items.find((item) => item.id === state.activeItemId) || state.items[0];
+}
+
+function getActiveItemIndex() {
+  const activeItem = getActiveItem();
+  return activeItem ? state.items.findIndex((item) => item.id === activeItem.id) : -1;
+}
+
+function setActiveItem(id) {
+  if (state.activeItemId === id) {
+    return;
+  }
+  state.activeItemId = id;
+  clearOutput();
+  state.notice = '';
+  render();
+}
+
+function revokeItemPreview(item) {
+  if (item?.previewUrl) {
+    URL.revokeObjectURL(item.previewUrl);
+    item.previewUrl = '';
+  }
 }
 
 function totalPages() {
@@ -438,19 +485,27 @@ function renderOutput() {
 }
 
 function renderPreview() {
-  if (!state.downloadUrl) {
-    els.previewPlaceholder.hidden = false;
-    els.previewFrame.hidden = true;
-    els.previewNote.textContent = 'Create a preview to inspect the modified PDF before downloading.';
+  if (state.downloadUrl) {
+    els.previewTitle.textContent = 'Modified Preview';
+    syncPreviewFrame();
+    els.previewNote.textContent = state.outputSummary || 'Preview is ready for inspection.';
     return;
   }
 
-  els.previewPlaceholder.hidden = true;
-  els.previewFrame.hidden = false;
-  if (els.previewFrame.src !== state.downloadUrl) {
-    els.previewFrame.src = state.downloadUrl;
+  const activeItem = getActiveItem();
+  els.previewTitle.textContent = 'Document View';
+
+  if (!activeItem) {
+    syncPreviewFrame();
+    els.previewPlaceholder.textContent = 'Selected PDF will appear here.';
+    els.previewNote.textContent = 'Select a PDF to view it here before applying tools.';
+    return;
   }
-  els.previewNote.textContent = state.outputSummary || 'Preview is ready for inspection.';
+
+  syncPreviewFrame();
+  const activeIndex = getActiveItemIndex();
+  const pageText = typeof activeItem.pages === 'number' ? ` • ${pluralize(activeItem.pages, 'page')}` : '';
+  els.previewNote.textContent = `Viewing ${activeItem.name}${pageText} • document ${activeIndex + 1} of ${state.items.length}.`;
 }
 
 function renderQueueNote() {
@@ -535,8 +590,9 @@ function renderList() {
   els.emptyState.hidden = state.items.length > 0;
 
   state.items.forEach((item, index) => {
+    const isActive = item.id === getActiveItem()?.id;
     const li = document.createElement('li');
-    li.className = 'file-item';
+    li.className = `file-item${isActive ? ' is-active' : ''}`;
 
     const main = document.createElement('div');
     main.className = 'file-main';
@@ -582,6 +638,14 @@ function renderList() {
     const actions = document.createElement('div');
     actions.className = 'file-actions';
 
+    const view = document.createElement('button');
+    view.type = 'button';
+    view.className = 'small-btn';
+    view.textContent = isActive ? 'Viewing' : 'View';
+    view.setAttribute('aria-label', `View ${item.name}`);
+    view.disabled = state.busy || isActive;
+    view.addEventListener('click', () => setActiveItem(item.id));
+
     const up = document.createElement('button');
     up.type = 'button';
     up.className = 'icon-btn';
@@ -606,7 +670,7 @@ function renderList() {
     remove.disabled = state.busy;
     remove.addEventListener('click', () => removeItem(item.id));
 
-    actions.append(up, down, remove);
+    actions.append(view, up, down, remove);
     li.append(main, actions);
     els.fileList.append(li);
   });
@@ -976,6 +1040,7 @@ function addFiles(fileList) {
       id: state.nextId++,
       file,
       name: file.name,
+      previewUrl: URL.createObjectURL(file),
       pages: null,
       error: null,
       range: '',
@@ -984,6 +1049,9 @@ function addFiles(fileList) {
     };
 
     state.items.push(item);
+    if (!state.activeItemId) {
+      state.activeItemId = item.id;
+    }
     added += 1;
     inspectFile(item);
   });
@@ -1016,7 +1084,12 @@ function removeItem(id) {
   const index = state.items.findIndex((item) => item.id === id);
   if (index < 0) return;
 
-  state.items.splice(index, 1);
+  const [item] = state.items.splice(index, 1);
+  revokeItemPreview(item);
+  if (state.activeItemId === id) {
+    const nextItem = state.items[Math.min(index, state.items.length - 1)] || null;
+    state.activeItemId = nextItem?.id || null;
+  }
   clearOutput();
   state.notice = '';
   render();
@@ -1043,7 +1116,9 @@ function updateReverse(id, reverse) {
 }
 
 function clearQueue() {
+  state.items.forEach(revokeItemPreview);
   state.items = [];
+  state.activeItemId = null;
   state.notice = '';
   clearOutput();
   render();

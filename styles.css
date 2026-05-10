@@ -167,6 +167,14 @@ button:disabled {
   grid-column: 1;
 }
 
+.preview-panel {
+  grid-row: 1;
+}
+
+.queue-panel {
+  grid-row: 2;
+}
+
 .panel-head {
   display: flex;
   justify-content: space-between;
@@ -212,6 +220,12 @@ button:disabled {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
   align-items: start;
+}
+
+.file-item.is-active {
+  border-color: rgba(36, 87, 214, 0.48);
+  background: #ffffff;
+  box-shadow: inset 0 0 0 1px rgba(36, 87, 214, 0.18);
 }
 
 .file-main {
@@ -378,6 +392,13 @@ button:disabled {
 .file-actions {
   display: flex;
   gap: 6px;
+}
+
+.small-btn {
+  min-height: 2.45rem;
+  padding: 0 0.72rem;
+  font-size: 0.86rem;
+  font-weight: 600;
 }
 
 .icon-btn {

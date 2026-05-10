@@ -5,6 +5,7 @@ Static browser-only PDF toolbox for Cloudflare.
 ## Features
 
 - Merge PDFs in the browser
+- View the selected source PDF immediately after upload
 - Extract selected pages into a new PDF
 - Remove selected pages from PDFs
 - Rotate selected pages while leaving the rest of each PDF in place
