@@ -9,6 +9,10 @@ const els = {
   coverPage: document.getElementById('cover-page'),
   coverSubtitle: document.getElementById('cover-subtitle'),
   coverTitle: document.getElementById('cover-title'),
+  dateStamp: document.getElementById('date-stamp'),
+  dateStampOptions: document.getElementById('date-stamp-options'),
+  dateStampPosition: document.getElementById('date-stamp-position'),
+  dateStampText: document.getElementById('date-stamp-text'),
   dropzone: document.getElementById('dropzone'),
   dropHint: document.getElementById('drop-hint'),
   duplexBlanks: document.getElementById('duplex-blanks'),
@@ -24,6 +28,7 @@ const els = {
   pageNumberFormat: document.getElementById('page-number-format'),
   pageNumberOptions: document.getElementById('page-number-options'),
   pageNumberPosition: document.getElementById('page-number-position'),
+  pageNumberScope: document.getElementById('page-number-scope'),
   pageNumberStart: document.getElementById('page-number-start'),
   pageNumbers: document.getElementById('page-numbers'),
   previewButton: document.getElementById('preview-btn'),
@@ -32,6 +37,9 @@ const els = {
   previewNote: document.getElementById('preview-note'),
   queueNote: document.getElementById('queue-note'),
   separatorPages: document.getElementById('separator-pages'),
+  sourceLabelOptions: document.getElementById('source-label-options'),
+  sourceLabelPosition: document.getElementById('source-label-position'),
+  sourceLabels: document.getElementById('source-labels'),
   status: document.getElementById('status'),
   summary: document.getElementById('summary'),
   tocOptions: document.getElementById('toc-options'),
@@ -126,6 +134,21 @@ function getMetadataOptions() {
   };
 }
 
+function getSourceLabelOptions() {
+  return {
+    enabled: els.sourceLabels.checked,
+    position: els.sourceLabelPosition.value || 'top-left',
+  };
+}
+
+function getDateStampOptions() {
+  return {
+    enabled: els.dateStamp.checked,
+    text: toDrawableText(els.dateStampText.value, new Date().toLocaleDateString()),
+    position: els.dateStampPosition.value || 'top-right',
+  };
+}
+
 function hasMetadataOptions() {
   const options = getMetadataOptions();
   return Boolean(options.title || options.author || options.subject);
@@ -143,6 +166,7 @@ function getPageNumberOptions() {
   return {
     format: els.pageNumberFormat.value,
     position: els.pageNumberPosition.value,
+    scope: els.pageNumberScope.value,
     start: clampInteger(els.pageNumberStart.value, 1, 9999, 1),
   };
 }
@@ -174,6 +198,12 @@ function activeModifierLabels() {
   }
   if (els.pageNumbers.checked) {
     labels.push('page numbers');
+  }
+  if (els.sourceLabels.checked) {
+    labels.push('source labels');
+  }
+  if (els.dateStamp.checked) {
+    labels.push('date stamp');
   }
   if (getWatermarkOptions().text) {
     labels.push('watermark');
@@ -553,8 +583,16 @@ function renderControls() {
   els.pageNumbers.disabled = disabled;
   els.pageNumberFormat.disabled = disabled || !els.pageNumbers.checked;
   els.pageNumberPosition.disabled = disabled || !els.pageNumbers.checked;
+  els.pageNumberScope.disabled = disabled || !els.pageNumbers.checked;
   els.pageNumberStart.disabled = disabled || !els.pageNumbers.checked;
   els.pageNumberOptions.classList.toggle('is-disabled', disabled || !els.pageNumbers.checked);
+  els.sourceLabels.disabled = disabled;
+  els.sourceLabelPosition.disabled = disabled || !els.sourceLabels.checked;
+  els.sourceLabelOptions.classList.toggle('is-disabled', disabled || !els.sourceLabels.checked);
+  els.dateStamp.disabled = disabled;
+  els.dateStampText.disabled = disabled || !els.dateStamp.checked;
+  els.dateStampPosition.disabled = disabled || !els.dateStamp.checked;
+  els.dateStampOptions.classList.toggle('is-disabled', disabled || !els.dateStamp.checked);
   els.metadataTitle.disabled = disabled;
   els.metadataAuthor.disabled = disabled;
   els.metadataSubject.disabled = disabled;
@@ -740,6 +778,7 @@ async function previewCombination() {
 
   try {
     const merged = await PDFDocument.create();
+    const pageInfos = [];
     applyMetadata(merged);
 
     const coverOptions = getCoverOptions();
@@ -750,10 +789,14 @@ async function previewCombination() {
 
     if (coverOptions.enabled) {
       await addCoverPage(merged, coverOptions);
+      pageInfos.push({ role: 'cover' });
     }
 
     if (tocOptions.enabled) {
       await addTableOfContents(merged, tocOptions, assemblyPlan);
+      for (let index = 0; index < tocPageCount; index += 1) {
+        pageInfos.push({ role: 'toc' });
+      }
     }
 
     for (const section of assemblyPlan) {
@@ -771,27 +814,43 @@ async function previewCombination() {
 
       if (section.blankBefore) {
         await addDuplexBlankPage(merged);
+        pageInfos.push({ role: 'blank' });
       }
 
       if (section.separatorPage) {
         await addSeparatorPage(merged, item, section.index + 1, selection.indices.length);
+        pageInfos.push({ role: 'separator', sourceName: item.name, sectionIndex: section.index });
       }
 
       const sourceIndices = item.reverse ? [...selection.indices].reverse() : selection.indices;
       const pages = await merged.copyPages(source, sourceIndices);
-      pages.forEach((page) => {
+      pages.forEach((page, pageIndex) => {
         if (item.rotation) {
           const currentRotation = page.getRotation().angle;
           page.setRotation(degrees((currentRotation + item.rotation) % 360));
         }
         merged.addPage(page);
+        pageInfos.push({
+          role: 'source',
+          sourceName: item.name,
+          sectionIndex: section.index,
+          sourcePage: sourceIndices[pageIndex] + 1,
+        });
       });
     }
 
     await addWatermark(merged);
 
+    if (els.sourceLabels.checked) {
+      await addSourceLabels(merged, pageInfos);
+    }
+
+    if (els.dateStamp.checked) {
+      await addDateStamp(merged, pageInfos);
+    }
+
     if (els.pageNumbers.checked) {
-      await addPageNumbers(merged);
+      await addPageNumbers(merged, pageInfos);
     }
 
     const mergedBytes = await merged.save();
@@ -1154,13 +1213,79 @@ function fitWatermarkSize(font, text, requestedSize, pageWidth, pageHeight) {
   return Math.max(18, requestedSize * (maxWidth / textWidth));
 }
 
-async function addPageNumbers(pdf) {
+async function addSourceLabels(pdf, pageInfos = []) {
+  const options = getSourceLabelOptions();
+  if (!options.enabled) {
+    return;
+  }
+
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const pages = pdf.getPages();
-  const total = pages.length;
-  const options = getPageNumberOptions();
+  const size = 8;
 
   pages.forEach((page, index) => {
+    const info = pageInfos[index];
+    if (info?.role !== 'source') {
+      return;
+    }
+
+    const displaySize = getDisplaySize(page);
+    const baseLabel = `${stripPdfExtension(info.sourceName)} - p.${info.sourcePage}`;
+    const label = truncateText(font, toDrawableText(baseLabel), size, displaySize.width - 36);
+    const placement = getDisplayTextPlacement(page, font, label, size, options.position, 18);
+
+    page.drawText(label, {
+      x: placement.x,
+      y: placement.y,
+      size,
+      font,
+      color: rgb(0.36, 0.42, 0.52),
+      rotate: placement.rotate,
+    });
+  });
+}
+
+async function addDateStamp(pdf, pageInfos = []) {
+  const options = getDateStampOptions();
+  if (!options.enabled || !options.text) {
+    return;
+  }
+
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const pages = pdf.getPages();
+  const size = 8;
+
+  pages.forEach((page, index) => {
+    const info = pageInfos[index];
+    if (info?.role === 'cover') {
+      return;
+    }
+
+    const displaySize = getDisplaySize(page);
+    const label = truncateText(font, options.text, size, displaySize.width - 36);
+    const placement = getDisplayTextPlacement(page, font, label, size, options.position, 18);
+
+    page.drawText(label, {
+      x: placement.x,
+      y: placement.y,
+      size,
+      font,
+      color: rgb(0.36, 0.42, 0.52),
+      rotate: placement.rotate,
+    });
+  });
+}
+
+async function addPageNumbers(pdf, pageInfos = []) {
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const pages = pdf.getPages();
+  const options = getPageNumberOptions();
+  const numberedPages = pages
+    .map((page, index) => ({ page, index, info: pageInfos[index] || { role: 'source' } }))
+    .filter((entry) => shouldNumberPage(entry.info, options.scope));
+  const total = numberedPages.length;
+
+  numberedPages.forEach(({ page }, index) => {
     const pageNumber = options.start + index;
     const label = formatPageNumber(pageNumber, options.start + total - 1, options.format);
     const size = 10;
@@ -1177,6 +1302,16 @@ async function addPageNumbers(pdf) {
   });
 }
 
+function shouldNumberPage(info, scope) {
+  if (scope === 'source-only') {
+    return info.role === 'source';
+  }
+  if (scope === 'skip-front') {
+    return info.role !== 'cover' && info.role !== 'toc';
+  }
+  return true;
+}
+
 function formatPageNumber(pageNumber, total, format) {
   if (format === 'page-current') {
     return `Page ${pageNumber}`;
@@ -1188,18 +1323,22 @@ function formatPageNumber(pageNumber, total, format) {
 }
 
 function getPageNumberPlacement(page, font, label, size, position) {
-  const margin = 18;
+  return getDisplayTextPlacement(page, font, label, size, position || 'bottom-center', 18);
+}
+
+function getDisplayTextPlacement(page, font, label, size, position, margin) {
   const placement = position || 'bottom-center';
   const rotation = normalizeRotation(page.getRotation().angle);
   const { width, height } = page.getSize();
   const displaySize = getDisplaySize(page);
   const textWidth = font.widthOfTextAtSize(label, size);
+  const alignLeft = placement.endsWith('left');
   const alignRight = placement.endsWith('right');
   const alignTop = placement.startsWith('top');
   const centeredX = (displaySize.width - textWidth) / 2;
   const rightX = displaySize.width - margin - textWidth;
   const topY = displaySize.height - margin - size;
-  const displayX = Math.max(margin, alignRight ? rightX : centeredX);
+  const displayX = Math.max(margin, alignLeft ? margin : alignRight ? rightX : centeredX);
   const displayY = Math.max(margin, alignTop ? topY : margin);
   const point = pagePointFromDisplayPoint(width, height, rotation, displayX, displayY);
 
@@ -1311,7 +1450,37 @@ els.pageNumberPosition.addEventListener('change', () => {
   state.notice = '';
   render();
 });
+els.pageNumberScope.addEventListener('change', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
 els.pageNumberStart.addEventListener('input', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
+els.sourceLabels.addEventListener('change', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
+els.sourceLabelPosition.addEventListener('change', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
+els.dateStamp.addEventListener('change', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
+els.dateStampText.addEventListener('input', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
+els.dateStampPosition.addEventListener('change', () => {
   clearOutput();
   state.notice = '';
   render();

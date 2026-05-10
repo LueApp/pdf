@@ -13,6 +13,9 @@ Static browser-only PDF combiner for Cloudflare.
 - Add separator pages between queued PDFs
 - Insert duplex blank pages so sections can start on right-hand pages
 - Add page numbers to the output
+- Scope page numbers to all pages, non-front-matter pages, or source pages only
+- Add source filename labels to copied source pages
+- Add a date stamp
 - Apply a text watermark stamp
 - Flatten form fields before merging
 - Set PDF title, author, and subject metadata

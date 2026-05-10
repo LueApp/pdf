@@ -114,14 +114,64 @@
             <select id="page-number-position">
               <option value="bottom-center">Bottom center</option>
               <option value="bottom-right">Bottom right</option>
+              <option value="bottom-left">Bottom left</option>
               <option value="top-center">Top center</option>
               <option value="top-right">Top right</option>
+              <option value="top-left">Top left</option>
+            </select>
+          </div>
+
+          <div class="field-group">
+            <label for="page-number-scope">Number scope</label>
+            <select id="page-number-scope">
+              <option value="all">All pages</option>
+              <option value="skip-front">Skip cover and TOC</option>
+              <option value="source-only">Source pages only</option>
             </select>
           </div>
 
           <div class="field-group">
             <label for="page-number-start">Start number</label>
             <input id="page-number-start" type="number" min="1" max="9999" value="1" inputmode="numeric">
+          </div>
+        </div>
+
+        <label class="check-row" for="source-labels">
+          <input id="source-labels" type="checkbox">
+          <span>Add source filename labels</span>
+        </label>
+
+        <div class="option-grid" id="source-label-options">
+          <div class="field-group">
+            <label for="source-label-position">Label position</label>
+            <select id="source-label-position">
+              <option value="top-left">Top left</option>
+              <option value="top-right">Top right</option>
+              <option value="bottom-left">Bottom left</option>
+              <option value="bottom-right">Bottom right</option>
+            </select>
+          </div>
+        </div>
+
+        <label class="check-row" for="date-stamp">
+          <input id="date-stamp" type="checkbox">
+          <span>Add date stamp</span>
+        </label>
+
+        <div class="option-grid" id="date-stamp-options">
+          <div class="field-group">
+            <label for="date-stamp-text">Date text</label>
+            <input id="date-stamp-text" type="text" placeholder="Use today's date" autocomplete="off" spellcheck="false">
+          </div>
+
+          <div class="field-group">
+            <label for="date-stamp-position">Date position</label>
+            <select id="date-stamp-position">
+              <option value="top-right">Top right</option>
+              <option value="top-left">Top left</option>
+              <option value="bottom-left">Bottom left</option>
+              <option value="bottom-right">Bottom right</option>
+            </select>
           </div>
         </div>
 
