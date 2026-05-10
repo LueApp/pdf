@@ -18,6 +18,11 @@ const els = {
   queueNote: document.getElementById('queue-note'),
   status: document.getElementById('status'),
   summary: document.getElementById('summary'),
+  watermarkOpacity: document.getElementById('watermark-opacity'),
+  watermarkOpacityValue: document.getElementById('watermark-opacity-value'),
+  watermarkSize: document.getElementById('watermark-size'),
+  watermarkSizeValue: document.getElementById('watermark-size-value'),
+  watermarkText: document.getElementById('watermark-text'),
 };
 
 const state = {
@@ -62,6 +67,24 @@ function sanitizePdfName(value) {
     return '';
   }
   return name.toLowerCase().endsWith('.pdf') ? name : `${name}.pdf`;
+}
+
+function getWatermarkOptions() {
+  const text = els.watermarkText.value.trim();
+  const opacity = Math.max(0, Math.min(1, Number(els.watermarkOpacity.value) / 100));
+  const size = Math.max(18, Math.min(96, Number(els.watermarkSize.value)));
+  return { text, opacity, size };
+}
+
+function activeModifierLabels() {
+  const labels = [];
+  if (els.pageNumbers.checked) {
+    labels.push('page numbers');
+  }
+  if (getWatermarkOptions().text) {
+    labels.push('watermark');
+  }
+  return labels;
 }
 
 function setNotice(message) {
@@ -365,6 +388,11 @@ function renderControls() {
   els.dropzone.disabled = disabled;
   els.outputName.disabled = disabled;
   els.pageNumbers.disabled = disabled;
+  els.watermarkText.disabled = disabled;
+  els.watermarkOpacity.disabled = disabled;
+  els.watermarkSize.disabled = disabled;
+  els.watermarkOpacityValue.textContent = `${els.watermarkOpacity.value}%`;
+  els.watermarkSizeValue.textContent = `${els.watermarkSize.value} pt`;
 }
 
 function render() {
@@ -550,6 +578,8 @@ async function previewCombination() {
       });
     }
 
+    await addWatermark(merged);
+
     if (els.pageNumbers.checked) {
       await addPageNumbers(merged);
     }
@@ -564,8 +594,10 @@ async function previewCombination() {
 
     state.downloadUrl = url;
     state.outputName = buildOutputName();
+    const modifiers = activeModifierLabels();
+    const modifierSummary = modifiers.length ? ` • ${modifiers.join(', ')}` : '';
     state.notice = `Preview ready: ${pluralize(state.items.length, 'PDF')} modified into ${pluralize(merged.getPageCount(), 'page')}.`;
-    state.outputSummary = `${state.outputName} • ${pluralize(merged.getPageCount(), 'page')} • ${formatBytes(blob.size)}`;
+    state.outputSummary = `${state.outputName} • ${pluralize(merged.getPageCount(), 'page')} • ${formatBytes(blob.size)}${modifierSummary}`;
   } catch (error) {
     console.error('Failed to create PDF preview:', error);
     state.notice = 'Could not create a preview for the selected files.';
@@ -577,6 +609,43 @@ async function previewCombination() {
     state.busy = false;
     render();
   }
+}
+
+async function addWatermark(pdf) {
+  const options = getWatermarkOptions();
+  if (!options.text) {
+    return;
+  }
+
+  const font = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const pages = pdf.getPages();
+
+  pages.forEach((page) => {
+    const { width, height } = page.getSize();
+    const size = fitWatermarkSize(font, options.text, options.size, width, height);
+    const textWidth = font.widthOfTextAtSize(options.text, size);
+
+    page.drawText(options.text, {
+      x: (width - textWidth) / 2,
+      y: height / 2,
+      size,
+      font,
+      color: rgb(0.16, 0.2, 0.28),
+      opacity: options.opacity,
+      rotate: degrees(-35),
+    });
+  });
+}
+
+function fitWatermarkSize(font, text, requestedSize, pageWidth, pageHeight) {
+  const maxWidth = Math.min(pageWidth, pageHeight) * 0.92;
+  const textWidth = font.widthOfTextAtSize(text, requestedSize);
+
+  if (textWidth <= maxWidth) {
+    return requestedSize;
+  }
+
+  return Math.max(18, requestedSize * (maxWidth / textWidth));
 }
 
 async function addPageNumbers(pdf) {
@@ -622,6 +691,21 @@ els.outputName.addEventListener('input', () => {
   }
 });
 els.pageNumbers.addEventListener('change', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
+els.watermarkText.addEventListener('input', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
+els.watermarkOpacity.addEventListener('input', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
+els.watermarkSize.addEventListener('input', () => {
   clearOutput();
   state.notice = '';
   render();

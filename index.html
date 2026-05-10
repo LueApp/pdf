@@ -55,6 +55,28 @@
           <span>Add page numbers</span>
         </label>
 
+        <div class="field-group">
+          <label for="watermark-text">Watermark text</label>
+          <input id="watermark-text" type="text" placeholder="Optional stamp" autocomplete="off" spellcheck="false">
+          <div class="field-help">Leave blank to skip the watermark.</div>
+        </div>
+
+        <div class="slider-group">
+          <div class="slider-head">
+            <label for="watermark-opacity">Watermark opacity</label>
+            <span id="watermark-opacity-value">35%</span>
+          </div>
+          <input id="watermark-opacity" type="range" min="0" max="100" value="35">
+        </div>
+
+        <div class="slider-group">
+          <div class="slider-head">
+            <label for="watermark-size">Watermark size</label>
+            <span id="watermark-size-value">48 pt</span>
+          </div>
+          <input id="watermark-size" type="range" min="18" max="96" value="48">
+        </div>
+
         <button type="button" class="primary" id="preview-btn">Preview combination</button>
 
         <div class="status-block">

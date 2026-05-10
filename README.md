@@ -2,6 +2,15 @@
 
 Static browser-only PDF combiner for Cloudflare.
 
+## Features
+
+- Merge PDFs in the browser
+- Select page ranges per input file
+- Rotate individual inputs
+- Add page numbers to the output
+- Apply a text watermark stamp
+- Preview the modified PDF before download
+
 ## Cloudflare Workers Build Settings
 
 - Framework preset: `None`
