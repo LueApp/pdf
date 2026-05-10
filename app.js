@@ -38,6 +38,8 @@ const els = {
   pageNumberScope: document.getElementById('page-number-scope'),
   pageNumberStart: document.getElementById('page-number-start'),
   pageNumbers: document.getElementById('page-numbers'),
+  pageGrid: document.getElementById('page-grid'),
+  pageSelectionNote: document.getElementById('page-selection-note'),
   pageSizeMode: document.getElementById('page-size-mode'),
   previewButton: document.getElementById('preview-btn'),
   previewFrame: document.getElementById('preview-frame'),
@@ -49,6 +51,25 @@ const els = {
   sourceLabelOptions: document.getElementById('source-label-options'),
   sourceLabelPosition: document.getElementById('source-label-position'),
   sourceLabels: document.getElementById('source-labels'),
+  selectAllPages: document.getElementById('select-all-pages'),
+  selectNoPages: document.getElementById('select-no-pages'),
+  invertPageSelection: document.getElementById('invert-page-selection'),
+  insertBlankAfterPages: document.getElementById('insert-blank-after-pages'),
+  clearInsertedBlanks: document.getElementById('clear-inserted-blanks'),
+  stampImageButton: document.getElementById('stamp-image-button'),
+  stampImageEnabled: document.getElementById('stamp-image-enabled'),
+  stampImageFile: document.getElementById('stamp-image-file'),
+  stampImageName: document.getElementById('stamp-image-name'),
+  stampImageOptions: document.getElementById('stamp-image-options'),
+  stampImagePosition: document.getElementById('stamp-image-position'),
+  stampImageSize: document.getElementById('stamp-image-size'),
+  stampImageSizeValue: document.getElementById('stamp-image-size-value'),
+  stampText: document.getElementById('stamp-text'),
+  stampTextEnabled: document.getElementById('stamp-text-enabled'),
+  stampTextOptions: document.getElementById('stamp-text-options'),
+  stampTextPosition: document.getElementById('stamp-text-position'),
+  stampTextSize: document.getElementById('stamp-text-size'),
+  stampTextSizeValue: document.getElementById('stamp-text-size-value'),
   status: document.getElementById('status'),
   summary: document.getElementById('summary'),
   tocOptions: document.getElementById('toc-options'),
@@ -72,6 +93,7 @@ const state = {
   downloadUrl: null,
   outputSummary: '',
   outputName: '',
+  stampImage: null,
 };
 
 function isPdfFile(file) {
@@ -198,6 +220,24 @@ function getPageNumberOptions() {
   };
 }
 
+function getTextStampOptions() {
+  return {
+    enabled: els.stampTextEnabled.checked,
+    text: toDrawableText(els.stampText.value),
+    position: els.stampTextPosition.value || 'center',
+    size: clampInteger(els.stampTextSize.value, 8, 72, 18),
+  };
+}
+
+function getImageStampOptions() {
+  return {
+    enabled: els.stampImageEnabled.checked,
+    image: state.stampImage,
+    position: els.stampImagePosition.value || 'center',
+    widthPercent: clampInteger(els.stampImageSize.value, 8, 90, 28),
+  };
+}
+
 function clampInteger(value, min, max, fallback) {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed)) {
@@ -228,6 +268,9 @@ function activeModifierLabels() {
   if (layoutOptions.blankBefore || layoutOptions.blankAfter) {
     labels.push('blank pages');
   }
+  if (state.items.some((item) => item.blankAfterPages?.size)) {
+    labels.push('inserted blank pages');
+  }
   if (toolMode === 'combine' && els.coverPage.checked) {
     labels.push('cover page');
   }
@@ -254,6 +297,12 @@ function activeModifierLabels() {
   }
   if (getWatermarkOptions().text) {
     labels.push('watermark');
+  }
+  if (getTextStampOptions().enabled && getTextStampOptions().text) {
+    labels.push('text stamps');
+  }
+  if (getImageStampOptions().enabled && getImageStampOptions().image) {
+    labels.push('image stamps');
   }
   if (state.items.some((item) => item.reverse)) {
     labels.push('reversed pages');
@@ -342,8 +391,15 @@ function selectedPagesTotal() {
     if (!selection.ok) {
       return sum;
     }
-    return sum + selection.indices.length;
+    return sum + selection.indices.length + countInsertedBlanks(item, selection.indices);
   }, 0);
+}
+
+function countInsertedBlanks(item, sourceIndices) {
+  if (!item.blankAfterPages?.size) {
+    return 0;
+  }
+  return sourceIndices.reduce((count, sourceIndex) => count + (item.blankAfterPages.has(sourceIndex) ? 1 : 0), 0);
 }
 
 function formatSelectionTotal(count, mode) {
@@ -364,7 +420,7 @@ function buildAssemblyPlan(frontPageCount) {
 
   return state.items.map((item, index) => {
     const selection = resolvePageSelection(item.range, item.pages, toolMode);
-    const selectedCount = selection.ok ? selection.indices.length : 0;
+    const selectedCount = selection.ok ? selection.indices.length + countInsertedBlanks(item, selection.indices) : 0;
     const blankBefore = isCombine && index > 0 && els.duplexBlanks.checked && pageCount % 2 === 1;
 
     if (blankBefore) {
@@ -508,6 +564,79 @@ function renderPreview() {
   els.previewNote.textContent = `Viewing ${activeItem.name}${pageText} • document ${activeIndex + 1} of ${state.items.length}.`;
 }
 
+function renderPageWorkspace() {
+  els.pageGrid.innerHTML = '';
+  const activeItem = getActiveItem();
+  const disabled = state.busy || !activeItem || activeItem.error || typeof activeItem.pages !== 'number';
+  els.selectAllPages.disabled = disabled;
+  els.selectNoPages.disabled = disabled;
+  els.invertPageSelection.disabled = disabled;
+  els.insertBlankAfterPages.disabled = disabled;
+  els.clearInsertedBlanks.disabled = disabled || !activeItem?.blankAfterPages?.size;
+
+  if (!activeItem) {
+    els.pageSelectionNote.textContent = 'Open a PDF to select pages visually.';
+    els.pageGrid.append(buildPageGridMessage('No document selected.'));
+    return;
+  }
+
+  if (activeItem.error) {
+    els.pageSelectionNote.textContent = 'Replace this PDF before selecting pages.';
+    els.pageGrid.append(buildPageGridMessage(activeItem.error));
+    return;
+  }
+
+  if (typeof activeItem.pages !== 'number') {
+    els.pageSelectionNote.textContent = 'Reading page details...';
+    els.pageGrid.append(buildPageGridMessage('Reading pages...'));
+    return;
+  }
+
+  const toolMode = getToolMode();
+  const selection = resolveTileSelection(activeItem, toolMode);
+  if (!selection.ok) {
+    els.pageSelectionNote.textContent = selection.error;
+  } else {
+    const selectedCount = selection.set.size;
+    const blankCount = activeItem.blankAfterPages?.size || 0;
+    const selectedText = selectedCount === activeItem.pages && toolMode !== 'remove'
+      ? 'All pages selected'
+      : `${pluralize(selectedCount, 'page')} selected`;
+    const blankText = blankCount ? ` • ${pluralize(blankCount, 'inserted blank')}` : '';
+    els.pageSelectionNote.textContent = `${selectedText} for ${getToolActionLabel(toolMode)}${blankText}.`;
+  }
+
+  for (let index = 0; index < activeItem.pages; index += 1) {
+    const selected = selection.ok && selection.set.has(index);
+    const hasBlank = activeItem.blankAfterPages?.has(index);
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `page-tile${selected ? ' is-selected' : ''}${hasBlank ? ' has-blank-after' : ''}`;
+    button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+    button.setAttribute('aria-label', `Page ${index + 1}${selected ? ', selected' : ''}`);
+    button.disabled = state.busy;
+    button.addEventListener('click', () => toggleActivePageSelection(index));
+
+    const thumbnail = document.createElement('span');
+    thumbnail.className = 'page-thumbnail';
+    thumbnail.textContent = String(index + 1);
+
+    const label = document.createElement('span');
+    label.className = 'page-tile-label';
+    label.textContent = hasBlank ? `Page ${index + 1} + blank` : `Page ${index + 1}`;
+
+    button.append(thumbnail, label);
+    els.pageGrid.append(button);
+  }
+}
+
+function buildPageGridMessage(message) {
+  const empty = document.createElement('div');
+  empty.className = 'page-grid-empty';
+  empty.textContent = message;
+  return empty;
+}
+
 function renderQueueNote() {
   const toolMode = getToolMode();
   if (!state.items.length) {
@@ -626,6 +755,12 @@ function renderList() {
       pages.textContent = 'Reading...';
     }
     meta.append(pages);
+
+    if (item.blankAfterPages?.size) {
+      const blanks = document.createElement('span');
+      blanks.textContent = pluralize(item.blankAfterPages.size, 'inserted blank');
+      meta.append(blanks);
+    }
 
     textWrap.append(title, meta);
 
@@ -870,6 +1005,19 @@ function renderControls() {
   els.metadataTitle.disabled = disabled;
   els.metadataAuthor.disabled = disabled;
   els.metadataSubject.disabled = disabled;
+  els.stampTextEnabled.disabled = disabled;
+  els.stampText.disabled = disabled || !els.stampTextEnabled.checked;
+  els.stampTextPosition.disabled = disabled || !els.stampTextEnabled.checked;
+  els.stampTextSize.disabled = disabled || !els.stampTextEnabled.checked;
+  els.stampTextOptions.classList.toggle('is-disabled', disabled || !els.stampTextEnabled.checked);
+  els.stampTextSizeValue.textContent = `${els.stampTextSize.value} pt`;
+  els.stampImageEnabled.disabled = disabled;
+  els.stampImageButton.disabled = disabled || !els.stampImageEnabled.checked;
+  els.stampImagePosition.disabled = disabled || !els.stampImageEnabled.checked;
+  els.stampImageSize.disabled = disabled || !els.stampImageEnabled.checked;
+  els.stampImageOptions.classList.toggle('is-disabled', disabled || !els.stampImageEnabled.checked);
+  els.stampImageName.textContent = state.stampImage?.name || 'No image selected.';
+  els.stampImageSizeValue.textContent = `${els.stampImageSize.value}%`;
   els.watermarkText.disabled = disabled;
   els.watermarkAngle.disabled = disabled;
   els.watermarkOpacity.disabled = disabled;
@@ -883,6 +1031,7 @@ function render() {
   renderSummary();
   renderQueueNote();
   renderList();
+  renderPageWorkspace();
   renderControls();
   renderStatus();
   renderPreview();
@@ -891,6 +1040,14 @@ function render() {
 
 function parsePageRanges(value, pageCount) {
   const trimmed = value.trim();
+  if (trimmed.toLowerCase() === 'none') {
+    return {
+      ok: true,
+      indices: [],
+      error: '',
+    };
+  }
+
   if (!trimmed) {
     return {
       ok: true,
@@ -929,6 +1086,51 @@ function parsePageRanges(value, pageCount) {
   }
 
   return { ok: true, indices, error: '' };
+}
+
+function resolveTileSelection(item, mode = getToolMode()) {
+  if (!item || typeof item.pages !== 'number') {
+    return { ok: false, set: new Set(), error: 'No page details available.' };
+  }
+
+  if (mode === 'remove' && !item.range.trim()) {
+    return { ok: true, set: new Set(), error: '' };
+  }
+
+  const selection = parsePageRanges(item.range, item.pages);
+  return {
+    ok: selection.ok,
+    set: new Set(selection.ok ? selection.indices : []),
+    error: selection.error,
+  };
+}
+
+function formatPageRange(indices, pageCount, mode = getToolMode()) {
+  const sorted = [...new Set(indices)].filter((index) => index >= 0 && index < pageCount).sort((a, b) => a - b);
+  if (!sorted.length) {
+    return mode === 'remove' ? '' : 'none';
+  }
+  if (mode !== 'remove' && sorted.length === pageCount) {
+    return '';
+  }
+
+  const ranges = [];
+  let start = sorted[0];
+  let previous = sorted[0];
+
+  for (let index = 1; index <= sorted.length; index += 1) {
+    const current = sorted[index];
+    if (current === previous + 1) {
+      previous = current;
+      continue;
+    }
+
+    ranges.push(start === previous ? String(start + 1) : `${start + 1}-${previous + 1}`);
+    start = current;
+    previous = current;
+  }
+
+  return ranges.join(',');
 }
 
 function resolvePageSelection(value, pageCount, mode) {
@@ -1046,6 +1248,7 @@ function addFiles(fileList) {
       range: '',
       reverse: false,
       rotation: 0,
+      blankAfterPages: new Set(),
     };
 
     state.items.push(item);
@@ -1110,6 +1313,103 @@ function updateReverse(id, reverse) {
   if (!item) return;
 
   item.reverse = reverse;
+  clearOutput();
+  state.notice = '';
+  render();
+}
+
+function updateActivePageRange(indices) {
+  const item = getActiveItem();
+  if (!item || typeof item.pages !== 'number') return;
+
+  item.range = formatPageRange(indices, item.pages, getToolMode());
+  clearOutput();
+  state.notice = '';
+  render();
+}
+
+function toggleActivePageSelection(pageIndex) {
+  const item = getActiveItem();
+  if (!item || typeof item.pages !== 'number') return;
+
+  const selection = resolveTileSelection(item);
+  if (!selection.ok) return;
+
+  if (selection.set.has(pageIndex)) {
+    selection.set.delete(pageIndex);
+  } else {
+    selection.set.add(pageIndex);
+  }
+
+  updateActivePageRange(selection.set);
+}
+
+function selectActivePages(mode) {
+  const item = getActiveItem();
+  if (!item || typeof item.pages !== 'number') return;
+
+  const selection = resolveTileSelection(item);
+  const selected = selection.ok ? selection.set : new Set();
+
+  if (mode === 'all') {
+    updateActivePageRange(Array.from({ length: item.pages }, (_, index) => index));
+    return;
+  }
+
+  if (mode === 'none') {
+    updateActivePageRange([]);
+    return;
+  }
+
+  const inverted = [];
+  for (let index = 0; index < item.pages; index += 1) {
+    if (!selected.has(index)) {
+      inverted.push(index);
+    }
+  }
+  updateActivePageRange(inverted);
+}
+
+function insertBlankAfterSelectedPages() {
+  const item = getActiveItem();
+  if (!item || typeof item.pages !== 'number') return;
+
+  const selection = resolveTileSelection(item);
+  const targets = selection.ok && selection.set.size
+    ? [...selection.set]
+    : [item.pages - 1];
+
+  targets.forEach((pageIndex) => item.blankAfterPages.add(pageIndex));
+  clearOutput();
+  state.notice = 'Blank page insertion updated.';
+  render();
+}
+
+function clearInsertedBlanks() {
+  const item = getActiveItem();
+  if (!item?.blankAfterPages?.size) return;
+
+  item.blankAfterPages.clear();
+  clearOutput();
+  state.notice = 'Inserted blank pages cleared.';
+  render();
+}
+
+async function updateStampImage(file) {
+  if (!file) return;
+
+  const isSupported = file.type === 'image/png' || file.type === 'image/jpeg' || /\.(png|jpe?g)$/i.test(file.name);
+  if (!isSupported) {
+    state.notice = 'Use a PNG or JPG image for image stamps.';
+    render();
+    return;
+  }
+
+  state.stampImage = {
+    name: file.name,
+    type: file.type === 'image/png' || /\.png$/i.test(file.name) ? 'image/png' : 'image/jpeg',
+    bytes: await file.arrayBuffer(),
+  };
   clearOutput();
   state.notice = '';
   render();
@@ -1195,16 +1495,28 @@ async function previewCombination() {
 
       const sourceIndices = item.reverse ? [...selection.indices].reverse() : selection.indices;
       const rotationForSourcePage = (sourceIndex) => getOutputPageRotation(item, selection, sourceIndex, toolMode);
-      const addedPages = layoutOptions.sizeMode === 'original'
-        ? await addCopiedSourcePages(merged, source, sourceIndices, rotationForSourcePage)
-        : await addFittedSourcePages(merged, source, sourceIndices, layoutOptions, rotationForSourcePage);
+      const addedEntries = await addSourcePagesWithInsertedBlanks(
+        merged,
+        source,
+        sourceIndices,
+        item,
+        layoutOptions,
+        generatedPageSize,
+        rotationForSourcePage,
+      );
 
-      addedPages.forEach((page, pageIndex) => {
+      addedEntries.forEach((entry) => {
+        if (entry.role === 'blank') {
+          pageInfos.push({ role: 'blank' });
+          return;
+        }
+
         pageInfos.push({
           role: 'source',
+          sourceItemId: item.id,
           sourceName: item.name,
           sectionIndex: section.index,
-          sourcePage: sourceIndices[pageIndex] + 1,
+          sourcePage: entry.sourceIndex + 1,
         });
       });
     }
@@ -1215,6 +1527,9 @@ async function previewCombination() {
     }
 
     await addWatermark(merged);
+
+    await addSelectedTextStamps(merged, pageInfos);
+    await addSelectedImageStamps(merged, pageInfos);
 
     if (els.sourceLabels.checked) {
       await addSourceLabels(merged, pageInfos);
@@ -1309,7 +1624,7 @@ async function addCoverPage(pdf, options, pageSize = COVER_PAGE_SIZE) {
     drawCenteredLines(page, subtitleLines, bodyFont, 15, height * 0.48, 22, rgb(0.28, 0.34, 0.44));
   }
 
-  const details = `${pluralize(state.items.length, 'file')} • ${pluralize(selectedPagesTotal(), 'selected page')}`;
+  const details = `${pluralize(state.items.length, 'file')} • ${formatSelectionTotal(selectedPagesTotal(), getToolMode())}`;
   drawCenteredLines(page, [details], bodyFont, 11, 72, 16, rgb(0.36, 0.4, 0.48));
 }
 
@@ -1464,6 +1779,39 @@ function getOutputPageRotation(item, selection, sourceIndex, toolMode) {
     return 0;
   }
   return item.rotation;
+}
+
+async function addSourcePagesWithInsertedBlanks(pdf, source, sourceIndices, item, layoutOptions, generatedPageSize, getRotation) {
+  const entries = [];
+
+  for (let index = 0; index < sourceIndices.length; index += 1) {
+    const sourceIndex = sourceIndices[index];
+    const pages = layoutOptions.sizeMode === 'original'
+      ? await addCopiedSourcePages(pdf, source, [sourceIndex], getRotation)
+      : await addFittedSourcePages(pdf, source, [sourceIndex], layoutOptions, getRotation);
+    const page = pages[0];
+    entries.push({ role: 'source', page, sourceIndex });
+
+    if (item.blankAfterPages?.has(sourceIndex)) {
+      const blankPage = addBlankPageLike(pdf, page, generatedPageSize);
+      entries.push({ role: 'blank', page: blankPage });
+    }
+  }
+
+  return entries;
+}
+
+function addBlankPageLike(pdf, referencePage, fallbackSize = COVER_PAGE_SIZE) {
+  const page = pdf.addPage();
+  if (referencePage) {
+    const { width, height } = referencePage.getSize();
+    page.setSize(width, height);
+    page.setRotation(referencePage.getRotation());
+    return page;
+  }
+
+  page.setSize(fallbackSize[0], fallbackSize[1]);
+  return page;
 }
 
 async function addCopiedSourcePages(pdf, source, sourceIndices, getRotation) {
@@ -1660,6 +2008,85 @@ function fitWatermarkSize(font, text, requestedSize, pageWidth, pageHeight) {
   return Math.max(18, requestedSize * (maxWidth / textWidth));
 }
 
+async function addSelectedTextStamps(pdf, pageInfos = []) {
+  const options = getTextStampOptions();
+  if (!options.enabled || !options.text) {
+    return;
+  }
+
+  const font = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const pages = pdf.getPages();
+
+  pages.forEach((page, index) => {
+    const info = pageInfos[index];
+    if (!shouldApplySelectedPageEdit(info)) {
+      return;
+    }
+
+    const displaySize = getDisplaySize(page);
+    const label = truncateText(font, options.text, options.size, displaySize.width - 48);
+    const placement = getDisplayBoxPlacement(page, font.widthOfTextAtSize(label, options.size), options.size, options.position, 24);
+    page.drawText(label, {
+      x: placement.x,
+      y: placement.y,
+      size: options.size,
+      font,
+      color: rgb(0.12, 0.17, 0.25),
+      opacity: 0.88,
+      rotate: placement.rotate,
+    });
+  });
+}
+
+async function addSelectedImageStamps(pdf, pageInfos = []) {
+  const options = getImageStampOptions();
+  if (!options.enabled || !options.image?.bytes) {
+    return;
+  }
+
+  const image = options.image.type === 'image/png'
+    ? await pdf.embedPng(options.image.bytes)
+    : await pdf.embedJpg(options.image.bytes);
+  const pages = pdf.getPages();
+
+  pages.forEach((page, index) => {
+    const info = pageInfos[index];
+    if (!shouldApplySelectedPageEdit(info)) {
+      return;
+    }
+
+    const displaySize = getDisplaySize(page);
+    const maxWidth = displaySize.width * (options.widthPercent / 100);
+    const scale = maxWidth / image.width;
+    const drawWidth = image.width * scale;
+    const drawHeight = image.height * scale;
+    const placement = getDisplayBoxPlacement(page, drawWidth, drawHeight, options.position, 24);
+
+    page.drawImage(image, {
+      x: placement.x,
+      y: placement.y,
+      width: drawWidth,
+      height: drawHeight,
+      opacity: 0.92,
+      rotate: placement.rotate,
+    });
+  });
+}
+
+function shouldApplySelectedPageEdit(info) {
+  if (info?.role !== 'source') {
+    return false;
+  }
+
+  const item = state.items.find((entry) => entry.id === info.sourceItemId);
+  if (!item || typeof item.pages !== 'number') {
+    return false;
+  }
+
+  const selection = resolveTileSelection(item);
+  return selection.ok && selection.set.has(info.sourcePage - 1);
+}
+
 async function addSourceLabels(pdf, pageInfos = []) {
   const options = getSourceLabelOptions();
   if (!options.enabled) {
@@ -1775,18 +2202,25 @@ function getPageNumberPlacement(page, font, label, size, position) {
 
 function getDisplayTextPlacement(page, font, label, size, position, margin) {
   const placement = position || 'bottom-center';
+  const textWidth = font.widthOfTextAtSize(label, size);
+  return getDisplayBoxPlacement(page, textWidth, size, placement, margin);
+}
+
+function getDisplayBoxPlacement(page, boxWidth, boxHeight, position, margin) {
+  const placement = position || 'bottom-center';
   const rotation = normalizeRotation(page.getRotation().angle);
   const { width, height } = page.getSize();
   const displaySize = getDisplaySize(page);
-  const textWidth = font.widthOfTextAtSize(label, size);
   const alignLeft = placement.endsWith('left');
   const alignRight = placement.endsWith('right');
   const alignTop = placement.startsWith('top');
-  const centeredX = (displaySize.width - textWidth) / 2;
-  const rightX = displaySize.width - margin - textWidth;
-  const topY = displaySize.height - margin - size;
+  const alignBottom = placement.startsWith('bottom');
+  const centeredX = (displaySize.width - boxWidth) / 2;
+  const centeredY = (displaySize.height - boxHeight) / 2;
+  const rightX = displaySize.width - margin - boxWidth;
+  const topY = displaySize.height - margin - boxHeight;
   const displayX = Math.max(margin, alignLeft ? margin : alignRight ? rightX : centeredX);
-  const displayY = Math.max(margin, alignTop ? topY : margin);
+  const displayY = Math.max(margin, alignTop ? topY : alignBottom ? margin : centeredY);
   const point = pagePointFromDisplayPoint(width, height, rotation, displayX, displayY);
 
   return {
@@ -1835,6 +2269,11 @@ els.fileInput.addEventListener('change', (event) => {
 });
 els.clearButton.addEventListener('click', clearQueue);
 els.previewButton.addEventListener('click', previewCombination);
+els.selectAllPages.addEventListener('click', () => selectActivePages('all'));
+els.selectNoPages.addEventListener('click', () => selectActivePages('none'));
+els.invertPageSelection.addEventListener('click', () => selectActivePages('invert'));
+els.insertBlankAfterPages.addEventListener('click', insertBlankAfterSelectedPages);
+els.clearInsertedBlanks.addEventListener('click', clearInsertedBlanks);
 els.outputName.addEventListener('input', () => {
   if (state.downloadUrl) {
     clearOutput();
@@ -1953,6 +2392,50 @@ els.dateStampText.addEventListener('input', () => {
   render();
 });
 els.dateStampPosition.addEventListener('change', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
+els.stampTextEnabled.addEventListener('change', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
+els.stampText.addEventListener('input', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
+els.stampTextPosition.addEventListener('change', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
+els.stampTextSize.addEventListener('input', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
+els.stampImageEnabled.addEventListener('change', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
+els.stampImageButton.addEventListener('click', () => {
+  if (!state.busy) {
+    els.stampImageFile.click();
+  }
+});
+els.stampImageFile.addEventListener('change', (event) => {
+  updateStampImage(event.target.files?.[0]);
+  event.target.value = '';
+});
+els.stampImagePosition.addEventListener('change', () => {
+  clearOutput();
+  state.notice = '';
+  render();
+});
+els.stampImageSize.addEventListener('input', () => {
   clearOutput();
   state.notice = '';
   render();
