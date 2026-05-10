@@ -53,6 +53,7 @@ const els = {
   tocOptions: document.getElementById('toc-options'),
   tocPage: document.getElementById('toc-page'),
   tocTitle: document.getElementById('toc-title'),
+  toolMode: document.getElementById('tool-mode'),
   watermarkAngle: document.getElementById('watermark-angle'),
   watermarkOpacity: document.getElementById('watermark-opacity'),
   watermarkOpacityValue: document.getElementById('watermark-opacity-value'),
@@ -116,6 +117,10 @@ function toDrawableText(value, fallback = '') {
 
 function stripPdfExtension(value) {
   return value.replace(/\.pdf$/i, '');
+}
+
+function getToolMode() {
+  return els.toolMode.value || 'combine';
 }
 
 function getCoverOptions() {
@@ -201,6 +206,13 @@ function clampInteger(value, min, max, fallback) {
 
 function activeModifierLabels() {
   const labels = [];
+  const toolMode = getToolMode();
+  if (toolMode === 'extract') {
+    labels.push('extracted pages');
+  }
+  if (toolMode === 'remove') {
+    labels.push('removed pages');
+  }
   const layoutOptions = getLayoutOptions();
   if (layoutOptions.sizeMode !== 'original') {
     labels.push(`${layoutOptions.sizeMode.toUpperCase()} page fit`);
@@ -208,16 +220,16 @@ function activeModifierLabels() {
   if (layoutOptions.blankBefore || layoutOptions.blankAfter) {
     labels.push('blank pages');
   }
-  if (els.coverPage.checked) {
+  if (toolMode === 'combine' && els.coverPage.checked) {
     labels.push('cover page');
   }
-  if (els.separatorPages.checked && state.items.length > 1) {
+  if (toolMode === 'combine' && els.separatorPages.checked && state.items.length > 1) {
     labels.push('separator pages');
   }
-  if (els.tocPage.checked) {
+  if (toolMode === 'combine' && els.tocPage.checked) {
     labels.push('table of contents');
   }
-  if (els.duplexBlanks.checked && state.items.length > 1) {
+  if (toolMode === 'combine' && els.duplexBlanks.checked && state.items.length > 1) {
     labels.push('duplex blanks');
   }
   if (els.flattenForms.checked) {
@@ -272,7 +284,7 @@ function selectedPagesTotal() {
       return sum;
     }
 
-    const selection = parsePageRanges(item.range, item.pages);
+    const selection = resolvePageSelection(item.range, item.pages, getToolMode());
     return selection.ok ? sum + selection.indices.length : sum;
   }, 0);
 }
@@ -283,17 +295,19 @@ function getTocPageCount() {
 
 function buildAssemblyPlan(frontPageCount) {
   let pageCount = frontPageCount;
+  const toolMode = getToolMode();
+  const isCombine = toolMode === 'combine';
 
   return state.items.map((item, index) => {
-    const selection = parsePageRanges(item.range, item.pages);
+    const selection = resolvePageSelection(item.range, item.pages, toolMode);
     const selectedCount = selection.ok ? selection.indices.length : 0;
-    const blankBefore = index > 0 && els.duplexBlanks.checked && pageCount % 2 === 1;
+    const blankBefore = isCombine && index > 0 && els.duplexBlanks.checked && pageCount % 2 === 1;
 
     if (blankBefore) {
       pageCount += 1;
     }
 
-    const separatorPage = index > 0 && els.separatorPages.checked ? pageCount + 1 : null;
+    const separatorPage = isCombine && index > 0 && els.separatorPages.checked ? pageCount + 1 : null;
     if (separatorPage) {
       pageCount += 1;
     }
@@ -306,7 +320,7 @@ function buildAssemblyPlan(frontPageCount) {
       index,
       selectedCount,
       indices: selection.ok ? selection.indices : [],
-      rangeLabel: item.range.trim() || `All 1-${item.pages}`,
+      rangeLabel: item.range.trim() || getRangePlaceholder(toolMode, item.pages),
       blankBefore,
       separatorPage,
       startPage,
@@ -320,7 +334,7 @@ function hasErrors() {
 }
 
 function hasRangeErrors() {
-  return state.items.some((item) => typeof item.pages === 'number' && !parsePageRanges(item.range, item.pages).ok);
+  return state.items.some((item) => typeof item.pages === 'number' && !resolvePageSelection(item.range, item.pages, getToolMode()).ok);
 }
 
 function countPending() {
@@ -353,8 +367,9 @@ function renderSummary() {
 }
 
 function renderStatus() {
+  const toolMode = getToolMode();
   if (state.busy) {
-    els.status.textContent = 'Creating preview...';
+    els.status.textContent = `Creating ${getToolNoun(toolMode)} preview...`;
     return;
   }
 
@@ -378,7 +393,7 @@ function renderStatus() {
     return;
   }
 
-  els.status.textContent = state.items.length ? 'Ready to preview modifications.' : 'Ready.';
+  els.status.textContent = state.items.length ? `Ready to preview ${getToolNoun(toolMode)}.` : 'Ready.';
 }
 
 function renderOutput() {
@@ -418,15 +433,56 @@ function renderPreview() {
 }
 
 function renderQueueNote() {
+  const toolMode = getToolMode();
   if (!state.items.length) {
-    els.queueNote.textContent = 'Add PDF files, choose pages, and adjust rotation.';
+    els.queueNote.textContent = getEmptyQueueText(toolMode);
     els.dropHint.textContent = 'No files selected.';
     return;
   }
 
   const pages = countPending() ? 'reading details' : `${pluralize(selectedPagesTotal(), 'selected page')} from ${pluralize(totalPages(), 'source page')}`;
-  els.queueNote.textContent = `${pluralize(state.items.length, 'file')} queued • ${pages}`;
+  els.queueNote.textContent = `${pluralize(state.items.length, 'file')} queued • ${pages} • ${getToolActionLabel(toolMode)}`;
   els.dropHint.textContent = `${pluralize(state.items.length, 'file')} queued.`;
+}
+
+function getToolNoun(mode) {
+  if (mode === 'extract') {
+    return 'extraction';
+  }
+  if (mode === 'remove') {
+    return 'page removal';
+  }
+  return 'combination';
+}
+
+function getToolActionLabel(mode) {
+  if (mode === 'extract') {
+    return 'extract selected pages';
+  }
+  if (mode === 'remove') {
+    return 'remove selected pages';
+  }
+  return 'combine and modify';
+}
+
+function getOutputVerb(mode) {
+  if (mode === 'extract') {
+    return 'extracted';
+  }
+  if (mode === 'remove') {
+    return 'filtered';
+  }
+  return 'modified';
+}
+
+function getEmptyQueueText(mode) {
+  if (mode === 'extract') {
+    return 'Add PDF files and choose the pages to extract.';
+  }
+  if (mode === 'remove') {
+    return 'Add PDF files and choose the pages to remove.';
+  }
+  return 'Add PDF files, choose pages, and adjust rotation.';
 }
 
 function renderList() {
@@ -512,21 +568,22 @@ function renderList() {
 }
 
 function buildFileOptions(item) {
+  const toolMode = getToolMode();
   const options = document.createElement('div');
   options.className = 'file-options';
 
-  const selection = parsePageRanges(item.range, item.pages);
+  const selection = resolvePageSelection(item.range, item.pages, toolMode);
 
   const rangeField = document.createElement('label');
   rangeField.className = 'range-field';
 
   const rangeLabel = document.createElement('span');
-  rangeLabel.textContent = 'Pages';
+  rangeLabel.textContent = getRangeLabel(toolMode);
 
   const rangeInput = document.createElement('input');
   rangeInput.type = 'text';
   rangeInput.value = item.range;
-  rangeInput.placeholder = `All 1-${item.pages}`;
+  rangeInput.placeholder = getRangePlaceholder(toolMode, item.pages);
   rangeInput.inputMode = 'text';
   rangeInput.setAttribute('aria-label', `Page range for ${item.name}`);
   if (!selection.ok) {
@@ -543,9 +600,7 @@ function buildFileOptions(item) {
 
   const helper = document.createElement('div');
   helper.className = selection.ok ? 'field-help' : 'field-help field-error';
-  helper.textContent = selection.ok
-    ? `${pluralize(selection.indices.length, 'selected page')}`
-    : selection.error;
+  helper.textContent = selection.ok ? getRangeHelperText(selection, toolMode) : selection.error;
 
   const rotateGroup = document.createElement('div');
   rotateGroup.className = 'rotate-group';
@@ -589,27 +644,83 @@ function buildFileOptions(item) {
   return options;
 }
 
+function getRangeLabel(mode) {
+  if (mode === 'extract') {
+    return 'Extract pages';
+  }
+  if (mode === 'remove') {
+    return 'Remove pages';
+  }
+  return 'Pages';
+}
+
+function getRangePlaceholder(mode, pages) {
+  if (mode === 'remove') {
+    return 'None';
+  }
+  return `All 1-${pages}`;
+}
+
+function getRangeHelperText(selection, mode) {
+  if (mode === 'remove') {
+    return `${pluralize(selection.removedCount, 'page')} removed • ${pluralize(selection.indices.length, 'page')} kept`;
+  }
+  if (mode === 'extract') {
+    return `${pluralize(selection.indices.length, 'page')} extracted`;
+  }
+  return `${pluralize(selection.indices.length, 'selected page')}`;
+}
+
+function getPreviewButtonText(mode) {
+  if (mode === 'extract') {
+    return 'Preview extraction';
+  }
+  if (mode === 'remove') {
+    return 'Preview page removal';
+  }
+  return 'Preview combination';
+}
+
+function renderToolVisibility(isCombine) {
+  setControlHidden(els.coverPage, !isCombine);
+  els.coverOptions.hidden = !isCombine;
+  setControlHidden(els.separatorPages, !isCombine);
+  setControlHidden(els.tocPage, !isCombine);
+  els.tocOptions.hidden = !isCombine;
+  setControlHidden(els.duplexBlanks, !isCombine);
+}
+
+function setControlHidden(input, hidden) {
+  const row = input.closest('.check-row');
+  if (row) {
+    row.hidden = hidden;
+  }
+}
+
 function renderControls() {
   const disabled = state.busy;
+  const toolMode = getToolMode();
+  const isCombine = toolMode === 'combine';
   els.addButton.disabled = disabled;
   els.clearButton.disabled = disabled || state.items.length === 0;
   els.previewButton.disabled = disabled || state.items.length === 0 || hasErrors() || hasRangeErrors() || countPending() > 0;
-  els.previewButton.textContent = state.busy ? 'Creating preview...' : 'Preview combination';
+  els.previewButton.textContent = state.busy ? 'Creating preview...' : getPreviewButtonText(toolMode);
   els.dropzone.disabled = disabled;
+  els.toolMode.disabled = disabled;
   els.outputName.disabled = disabled;
   els.pageSizeMode.disabled = disabled;
   els.layoutMargin.disabled = disabled || els.pageSizeMode.value === 'original';
   els.blankBeforeCount.disabled = disabled;
   els.blankAfterCount.disabled = disabled;
-  els.coverPage.disabled = disabled;
-  els.coverTitle.disabled = disabled || !els.coverPage.checked;
-  els.coverSubtitle.disabled = disabled || !els.coverPage.checked;
-  els.coverOptions.classList.toggle('is-disabled', disabled || !els.coverPage.checked);
-  els.separatorPages.disabled = disabled || state.items.length < 2;
-  els.tocPage.disabled = disabled;
-  els.tocTitle.disabled = disabled || !els.tocPage.checked;
-  els.tocOptions.classList.toggle('is-disabled', disabled || !els.tocPage.checked);
-  els.duplexBlanks.disabled = disabled || state.items.length < 2;
+  els.coverPage.disabled = disabled || !isCombine;
+  els.coverTitle.disabled = disabled || !isCombine || !els.coverPage.checked;
+  els.coverSubtitle.disabled = disabled || !isCombine || !els.coverPage.checked;
+  els.coverOptions.classList.toggle('is-disabled', disabled || !isCombine || !els.coverPage.checked);
+  els.separatorPages.disabled = disabled || !isCombine || state.items.length < 2;
+  els.tocPage.disabled = disabled || !isCombine;
+  els.tocTitle.disabled = disabled || !isCombine || !els.tocPage.checked;
+  els.tocOptions.classList.toggle('is-disabled', disabled || !isCombine || !els.tocPage.checked);
+  els.duplexBlanks.disabled = disabled || !isCombine || state.items.length < 2;
   els.flattenForms.disabled = disabled;
   els.pageNumbers.disabled = disabled;
   els.pageNumberFormat.disabled = disabled || !els.pageNumbers.checked;
@@ -633,6 +744,7 @@ function renderControls() {
   els.watermarkSize.disabled = disabled;
   els.watermarkOpacityValue.textContent = `${els.watermarkOpacity.value}%`;
   els.watermarkSizeValue.textContent = `${els.watermarkSize.value} pt`;
+  renderToolVisibility(isCombine);
 }
 
 function render() {
@@ -685,6 +797,35 @@ function parsePageRanges(value, pageCount) {
   }
 
   return { ok: true, indices, error: '' };
+}
+
+function resolvePageSelection(value, pageCount, mode) {
+  if (mode === 'remove' && !value.trim()) {
+    return {
+      ok: true,
+      indices: Array.from({ length: pageCount }, (_, index) => index),
+      removedCount: 0,
+      error: '',
+    };
+  }
+
+  const selection = parsePageRanges(value, pageCount);
+  if (!selection.ok || mode !== 'remove') {
+    return {
+      ...selection,
+      removedCount: 0,
+    };
+  }
+
+  const removed = new Set(selection.indices);
+  const indices = Array.from({ length: pageCount }, (_, index) => index).filter((index) => !removed.has(index));
+
+  return {
+    ok: true,
+    indices,
+    removedCount: removed.size,
+    error: '',
+  };
 }
 
 async function inspectFile(item) {
@@ -808,6 +949,8 @@ async function previewCombination() {
   render();
 
   try {
+    const toolMode = getToolMode();
+    const isCombine = toolMode === 'combine';
     const merged = await PDFDocument.create();
     const pageInfos = [];
     applyMetadata(merged);
@@ -816,8 +959,8 @@ async function previewCombination() {
     const generatedPageSize = layoutOptions.sizeMode === 'original' ? COVER_PAGE_SIZE : layoutOptions.pageSize;
     const coverOptions = getCoverOptions();
     const tocOptions = getTocOptions();
-    const tocPageCount = tocOptions.enabled ? getTocPageCount() : 0;
-    const frontPageCount = layoutOptions.blankBefore + (coverOptions.enabled ? 1 : 0) + tocPageCount;
+    const tocPageCount = isCombine && tocOptions.enabled ? getTocPageCount() : 0;
+    const frontPageCount = layoutOptions.blankBefore + (isCombine && coverOptions.enabled ? 1 : 0) + tocPageCount;
     const assemblyPlan = buildAssemblyPlan(frontPageCount);
 
     for (let index = 0; index < layoutOptions.blankBefore; index += 1) {
@@ -825,12 +968,12 @@ async function previewCombination() {
       pageInfos.push({ role: 'blank' });
     }
 
-    if (coverOptions.enabled) {
+    if (isCombine && coverOptions.enabled) {
       await addCoverPage(merged, coverOptions, generatedPageSize);
       pageInfos.push({ role: 'cover' });
     }
 
-    if (tocOptions.enabled) {
+    if (isCombine && tocOptions.enabled) {
       await addTableOfContents(merged, tocOptions, assemblyPlan, generatedPageSize);
       for (let index = 0; index < tocPageCount; index += 1) {
         pageInfos.push({ role: 'toc' });
@@ -845,7 +988,7 @@ async function previewCombination() {
         flattenFormFields(source);
       }
 
-      const selection = parsePageRanges(item.range, source.getPageCount());
+      const selection = resolvePageSelection(item.range, source.getPageCount(), toolMode);
       if (!selection.ok) {
         throw new Error(`${item.name}: ${selection.error}`);
       }
@@ -894,6 +1037,10 @@ async function previewCombination() {
       await addPageNumbers(merged, pageInfos);
     }
 
+    if (!merged.getPageCount()) {
+      throw new Error('No pages would be included in the output.');
+    }
+
     const mergedBytes = await merged.save();
     const blob = new Blob([mergedBytes], { type: 'application/pdf' });
     const url = URL.createObjectURL(blob);
@@ -906,7 +1053,7 @@ async function previewCombination() {
     state.outputName = buildOutputName();
     const modifiers = activeModifierLabels();
     const modifierSummary = modifiers.length ? ` • ${modifiers.join(', ')}` : '';
-    state.notice = `Preview ready: ${pluralize(state.items.length, 'PDF')} modified into ${pluralize(merged.getPageCount(), 'page')}.`;
+    state.notice = `Preview ready: ${pluralize(state.items.length, 'PDF')} ${getOutputVerb(toolMode)} into ${pluralize(merged.getPageCount(), 'page')}.`;
     state.outputSummary = `${state.outputName} • ${pluralize(merged.getPageCount(), 'page')} • ${formatBytes(blob.size)}${modifierSummary}`;
   } catch (error) {
     console.error('Failed to create PDF preview:', error);
@@ -1490,6 +1637,11 @@ els.outputName.addEventListener('input', () => {
     state.notice = '';
     render();
   }
+});
+els.toolMode.addEventListener('change', () => {
+  clearOutput();
+  state.notice = '';
+  render();
 });
 els.pageSizeMode.addEventListener('change', () => {
   clearOutput();

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>PDF Combiner</title>
+  <title>PDF Toolbox</title>
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
@@ -11,7 +11,7 @@
     <header class="masthead">
       <div class="masthead-copy">
         <p class="eyebrow">Local PDF tool</p>
-        <h1>PDF Combiner</h1>
+        <h1>PDF Toolbox</h1>
       </div>
       <div class="masthead-meta" id="summary" aria-live="polite">0 files • 0 pages</div>
     </header>
@@ -43,6 +43,15 @@
         <div class="button-row">
           <button type="button" id="add-btn">Add files</button>
           <button type="button" id="clear-btn">Clear</button>
+        </div>
+
+        <div class="field-group">
+          <label for="tool-mode">PDF tool</label>
+          <select id="tool-mode">
+            <option value="combine">Combine and modify</option>
+            <option value="extract">Extract pages</option>
+            <option value="remove">Remove pages</option>
+          </select>
         </div>
 
         <div class="field-group">

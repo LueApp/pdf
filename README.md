@@ -1,10 +1,12 @@
-# PDF Combiner
+# PDF Toolbox
 
-Static browser-only PDF combiner for Cloudflare.
+Static browser-only PDF toolbox for Cloudflare.
 
 ## Features
 
 - Merge PDFs in the browser
+- Extract selected pages into a new PDF
+- Remove selected pages from PDFs
 - Select page ranges per input file
 - Rotate individual inputs
 - Reverse selected pages per input file
