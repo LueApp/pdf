@@ -5,6 +5,9 @@ const PAGE_SIZES = {
   letter: [612, 792],
 };
 const TOC_ENTRIES_PER_PAGE = 24;
+const IMAGE_ANALYSIS_MAX_EDGE = 960;
+const IMAGE_OUTPUT_MAX_EDGE = 2200;
+const IMAGE_EDGE_POINT_LIMIT = 12000;
 
 const els = {
   addButton: document.getElementById('add-btn'),
@@ -26,6 +29,23 @@ const els = {
   fileInput: document.getElementById('file-input'),
   fileList: document.getElementById('file-list'),
   flattenForms: document.getElementById('flatten-forms'),
+  imageAutoButton: document.getElementById('image-auto-btn'),
+  imageChooseButton: document.getElementById('image-choose-btn'),
+  imageClearButton: document.getElementById('image-clear-btn'),
+  imageDownloadAllButton: document.getElementById('image-download-all-btn'),
+  imageDownloadButton: document.getElementById('image-download-btn'),
+  imageDropHint: document.getElementById('image-drop-hint'),
+  imageDropzone: document.getElementById('image-dropzone'),
+  imageInput: document.getElementById('image-input'),
+  imageList: document.getElementById('image-list'),
+  imageOutputCanvas: document.getElementById('image-output-canvas'),
+  imageOutputPlaceholder: document.getElementById('image-output-placeholder'),
+  imageResetCornersButton: document.getElementById('image-reset-corners-btn'),
+  imageRotateLeftButton: document.getElementById('image-rotate-left-btn'),
+  imageRotateRightButton: document.getElementById('image-rotate-right-btn'),
+  imageSourceCanvas: document.getElementById('image-source-canvas'),
+  imageSourcePlaceholder: document.getElementById('image-source-placeholder'),
+  imageStatus: document.getElementById('image-status'),
   metadataAuthor: document.getElementById('metadata-author'),
   metadataSubject: document.getElementById('metadata-subject'),
   metadataTitle: document.getElementById('metadata-title'),
@@ -94,10 +114,22 @@ const state = {
   outputSummary: '',
   outputName: '',
   stampImage: null,
+  imageTool: {
+    items: [],
+    nextId: 1,
+    activeId: null,
+    draggingHandle: null,
+    processing: false,
+    status: 'Ready for an image.',
+  },
 };
 
 function isPdfFile(file) {
   return file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+}
+
+function isImageFile(file) {
+  return /^image\/(png|jpe?g|webp)$/i.test(file.type) || /\.(png|jpe?g|webp)$/i.test(file.name);
 }
 
 function pluralize(count, word) {
@@ -128,6 +160,12 @@ function sanitizePdfName(value) {
     return '';
   }
   return name.toLowerCase().endsWith('.pdf') ? name : `${name}.pdf`;
+}
+
+function buildRectifiedImageName(fileName) {
+  const baseName = fileName.replace(/\.[^.]+$/, '').trim() || 'image';
+  const safeName = baseName.replace(/[\\/:*?"<>|]+/g, '-').slice(0, 80) || 'image';
+  return `${safeName}-rectified.png`;
 }
 
 function cleanTextInput(value, maxLength = 160) {
@@ -1027,12 +1065,75 @@ function renderControls() {
   renderToolVisibility(isCombine);
 }
 
+function renderImageTool() {
+  const tool = state.imageTool;
+  const activeItem = getActiveImageItem();
+  const hasImage = Boolean(activeItem?.image);
+  const hasOutput = Boolean(activeItem?.outputUrl);
+  const outputCount = tool.items.filter((item) => item.outputUrl).length;
+  els.imageDropHint.textContent = tool.items.length
+    ? `${pluralize(tool.items.length, 'image')} queued.`
+    : 'No image selected.';
+  els.imageDropzone.disabled = tool.processing;
+  els.imageChooseButton.disabled = tool.processing;
+  els.imageClearButton.disabled = tool.processing || tool.items.length === 0;
+  els.imageAutoButton.disabled = tool.processing || !hasImage;
+  els.imageRotateLeftButton.disabled = tool.processing || !hasImage;
+  els.imageRotateRightButton.disabled = tool.processing || !hasImage;
+  els.imageResetCornersButton.disabled = tool.processing || !hasImage;
+  els.imageDownloadButton.disabled = tool.processing || !hasOutput;
+  els.imageDownloadAllButton.disabled = tool.processing || outputCount === 0;
+  els.imageStatus.textContent = tool.status;
+  els.imageSourceCanvas.hidden = !hasImage;
+  els.imageSourcePlaceholder.hidden = hasImage;
+  els.imageOutputCanvas.hidden = !hasOutput;
+  els.imageOutputPlaceholder.hidden = hasOutput;
+  renderImageList();
+}
+
+function renderImageList() {
+  els.imageList.innerHTML = '';
+  state.imageTool.items.forEach((item) => {
+    const row = document.createElement('div');
+    row.className = `image-list-item${item.id === state.imageTool.activeId ? ' is-active' : ''}`;
+
+    const main = document.createElement('button');
+    main.type = 'button';
+    main.className = 'image-list-main';
+    main.disabled = state.imageTool.processing;
+    main.addEventListener('click', () => setActiveImageItem(item.id));
+
+    const name = document.createElement('span');
+    name.className = 'image-list-name';
+    name.title = item.fileName;
+    name.textContent = item.fileName;
+
+    const meta = document.createElement('span');
+    meta.className = 'image-list-meta';
+    meta.textContent = getImageItemMeta(item);
+
+    main.append(name, meta);
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'icon-btn';
+    remove.textContent = '×';
+    remove.setAttribute('aria-label', `Remove ${item.fileName}`);
+    remove.disabled = state.imageTool.processing;
+    remove.addEventListener('click', () => removeImageItem(item.id));
+
+    row.append(main, remove);
+    els.imageList.append(row);
+  });
+}
+
 function render() {
   renderSummary();
   renderQueueNote();
   renderList();
   renderPageWorkspace();
   renderControls();
+  renderImageTool();
   renderStatus();
   renderPreview();
   renderOutput();
@@ -1413,6 +1514,1838 @@ async function updateStampImage(file) {
   clearOutput();
   state.notice = '';
   render();
+}
+
+function getActiveImageItem() {
+  const { items, activeId } = state.imageTool;
+  if (!items.length) {
+    return null;
+  }
+  return items.find((item) => item.id === activeId) || items[0];
+}
+
+function setActiveImageItem(id) {
+  if (state.imageTool.activeId === id) {
+    return;
+  }
+
+  state.imageTool.activeId = id;
+  const item = getActiveImageItem();
+  state.imageTool.status = item ? getImageItemStatus(item) : 'Ready for an image.';
+  drawActiveImagePreviews();
+  render();
+}
+
+function getImageItemMeta(item) {
+  const parts = [`${item.sourceWidth} x ${item.sourceHeight}px`];
+  if (item.rotation) {
+    parts.push(`${item.rotation} deg`);
+  }
+  parts.push(item.outputUrl ? 'ready' : item.corners ? 'corners set' : 'not extracted');
+  return parts.join(' - ');
+}
+
+function getImageItemStatus(item) {
+  if (!item) {
+    return 'Ready for an image.';
+  }
+  if (item.outputUrl) {
+    return `${item.fileName} ready at ${item.outputWidth} x ${item.outputHeight}px.`;
+  }
+  if (item.corners) {
+    return `${item.fileName} has editable ${hasActiveCurve(item) ? 'curves' : 'corners'}.`;
+  }
+  return `${item.fileName} loaded.`;
+}
+
+function clearImageItemOutput(item, clearCorners = false) {
+  if (!item) return;
+  if (item.outputUrl) {
+    URL.revokeObjectURL(item.outputUrl);
+  }
+  item.outputUrl = null;
+  item.outputBlob = null;
+  item.outputName = buildRectifiedImageName(item.fileName);
+  item.outputWidth = 0;
+  item.outputHeight = 0;
+  if (clearCorners) {
+    item.corners = null;
+    item.curvePoints = null;
+    item.fallback = false;
+  }
+}
+
+function clearImageOutputOnly(item) {
+  clearImageItemOutput(item, false);
+}
+
+function clearImageOutputCanvas() {
+  els.imageOutputCanvas.width = 0;
+  els.imageOutputCanvas.height = 0;
+}
+
+function getImageNaturalSize(image) {
+  return {
+    width: image.naturalWidth || image.videoWidth || image.width,
+    height: image.naturalHeight || image.videoHeight || image.height,
+  };
+}
+
+function loadImageElement(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('Image could not be loaded.'));
+    };
+    image.src = url;
+  });
+}
+
+async function addRectifierImages(fileList) {
+  const files = [...(fileList || [])];
+  const imageFiles = files.filter(isImageFile);
+  if (!imageFiles.length) {
+    state.imageTool.status = files.length ? 'Use JPG, PNG, or WebP images.' : 'Ready for an image.';
+    render();
+    return;
+  }
+
+  state.imageTool.processing = true;
+  state.imageTool.status = `Loading ${pluralize(imageFiles.length, 'image')}...`;
+  render();
+
+  const newItems = [];
+  for (const file of imageFiles) {
+    try {
+      const image = await loadImageElement(file);
+      const { width, height } = getImageNaturalSize(image);
+      if (!width || !height) {
+        throw new Error('Image has no readable dimensions.');
+      }
+
+      const item = {
+        id: state.imageTool.nextId++,
+        fileName: file.name,
+        image,
+        sourceWidth: width,
+        sourceHeight: height,
+        rotation: 0,
+        corners: null,
+        curvePoints: null,
+        fallback: false,
+        outputUrl: null,
+        outputBlob: null,
+        outputName: buildRectifiedImageName(file.name),
+        outputWidth: 0,
+        outputHeight: 0,
+      };
+      state.imageTool.items.push(item);
+      newItems.push(item);
+      if (!state.imageTool.activeId) {
+        state.imageTool.activeId = item.id;
+      }
+    } catch (error) {
+      console.error('Failed to load image:', file.name, error);
+    }
+  }
+
+  state.imageTool.processing = false;
+  if (!newItems.length) {
+    state.imageTool.status = 'Could not load those images.';
+    render();
+    return;
+  }
+
+  drawActiveImagePreviews();
+  state.imageTool.status = `Loaded ${pluralize(newItems.length, 'image')}. Auto extracting...`;
+  render();
+  await processImageItems(newItems, true);
+}
+
+async function processRectifierImage() {
+  const item = getActiveImageItem();
+  if (!item || state.imageTool.processing) {
+    return;
+  }
+  await processImageItem(item, { detect: true });
+}
+
+async function processImageItems(items, detect) {
+  state.imageTool.processing = true;
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    state.imageTool.status = `Extracting ${index + 1} of ${items.length}: ${item.fileName}`;
+    render();
+    await waitForFrame();
+    await processImageItem(item, { detect, keepBusy: true });
+  }
+  state.imageTool.processing = false;
+  const activeItem = getActiveImageItem();
+  state.imageTool.status = activeItem ? getImageItemStatus(activeItem) : 'Ready for an image.';
+  drawActiveImagePreviews();
+  render();
+}
+
+async function processImageItem(item, { detect = false, keepBusy = false } = {}) {
+  if (!item?.image) {
+    return;
+  }
+
+  const startedIdle = !state.imageTool.processing;
+  if (startedIdle) {
+    state.imageTool.processing = true;
+  }
+
+  if (item.id === state.imageTool.activeId) {
+    state.imageTool.status = detect ? 'Detecting document edges...' : 'Aligning image...';
+    clearImageOutputCanvas();
+    drawImageSourcePreview(item);
+    render();
+    await waitForFrame();
+  }
+
+  try {
+    const source = getPreparedImageSource(item);
+    clearImageItemOutput(item, detect);
+
+    if (detect || !item.corners) {
+      const detection = detectDocumentCorners(source);
+      item.corners = detection.corners;
+      item.curvePoints = null;
+      item.fallback = detection.fallback;
+    } else {
+      const { width, height } = getImageNaturalSize(source);
+      item.fallback = isFullImageQuad(item.corners, width, height);
+    }
+
+    if (item.id === state.imageTool.activeId) {
+      drawImageSourcePreview(item);
+      render();
+      await waitForFrame();
+    }
+
+    const result = warpImageToRectangle(source, item.corners, item.curvePoints);
+    const outputCanvas = item.id === state.imageTool.activeId ? els.imageOutputCanvas : document.createElement('canvas');
+    outputCanvas.width = result.width;
+    outputCanvas.height = result.height;
+    outputCanvas.getContext('2d').putImageData(result.imageData, 0, 0);
+
+    const blob = await canvasToBlob(outputCanvas, 'image/png');
+    item.outputUrl = URL.createObjectURL(blob);
+    item.outputBlob = blob;
+    item.outputWidth = result.width;
+    item.outputHeight = result.height;
+    item.outputName = buildRectifiedImageName(item.fileName);
+
+    if (item.id === state.imageTool.activeId) {
+      state.imageTool.status = item.fallback
+        ? `Aligned full image to ${result.width} x ${result.height}px.`
+        : `${hasActiveCurve(item) ? 'Extracted curved boundary' : 'Extracted trapezoid'} and aligned to ${result.width} x ${result.height}px.`;
+    }
+  } catch (error) {
+    console.error('Failed to rectify image:', item.fileName, error);
+    clearImageItemOutput(item);
+    if (item.id === state.imageTool.activeId) {
+      clearImageOutputCanvas();
+      state.imageTool.status = 'Could not extract a rectangle from that image.';
+    }
+  } finally {
+    if (startedIdle && !keepBusy) {
+      state.imageTool.processing = false;
+    }
+    if (!keepBusy) {
+      render();
+    }
+  }
+}
+
+function getPreparedImageSource(item) {
+  const rotation = normalizeRotation(item.rotation || 0);
+  if (!rotation) {
+    return item.image;
+  }
+
+  const { width, height } = getImageNaturalSize(item.image);
+  const canvas = document.createElement('canvas');
+  canvas.width = rotation === 90 || rotation === 270 ? height : width;
+  canvas.height = rotation === 90 || rotation === 270 ? width : height;
+  const context = canvas.getContext('2d');
+  context.save();
+
+  if (rotation === 90) {
+    context.translate(canvas.width, 0);
+    context.rotate(Math.PI / 2);
+  } else if (rotation === 180) {
+    context.translate(canvas.width, canvas.height);
+    context.rotate(Math.PI);
+  } else if (rotation === 270) {
+    context.translate(0, canvas.height);
+    context.rotate(-Math.PI / 2);
+  }
+
+  context.drawImage(item.image, 0, 0, width, height);
+  context.restore();
+  return canvas;
+}
+
+function drawActiveImagePreviews() {
+  const item = getActiveImageItem();
+  if (!item) {
+    els.imageSourceCanvas.width = 0;
+    els.imageSourceCanvas.height = 0;
+    clearImageOutputCanvas();
+    return;
+  }
+
+  drawImageSourcePreview(item);
+  if (item.outputUrl) {
+    drawImageOutputPreview(item);
+  } else {
+    clearImageOutputCanvas();
+  }
+}
+
+function drawImageSourcePreview(item) {
+  if (!item?.image) {
+    els.imageSourceCanvas.width = 0;
+    els.imageSourceCanvas.height = 0;
+    return;
+  }
+
+  const source = getPreparedImageSource(item);
+  const { width, height } = getImageNaturalSize(source);
+  const scale = Math.min(1, 900 / Math.max(width, height));
+  const canvasWidth = Math.max(1, Math.round(width * scale));
+  const canvasHeight = Math.max(1, Math.round(height * scale));
+  els.imageSourceCanvas.width = canvasWidth;
+  els.imageSourceCanvas.height = canvasHeight;
+
+  const context = els.imageSourceCanvas.getContext('2d');
+  context.clearRect(0, 0, canvasWidth, canvasHeight);
+  context.drawImage(source, 0, 0, canvasWidth, canvasHeight);
+
+  if (!item.corners?.length) {
+    return;
+  }
+
+  context.save();
+  context.lineWidth = Math.max(3, Math.round(Math.min(canvasWidth, canvasHeight) / 160));
+  context.strokeStyle = 'rgba(15, 118, 110, 0.95)';
+  context.fillStyle = 'rgba(15, 118, 110, 0.18)';
+  const curvePoints = getImageCurvePoints(item);
+  context.beginPath();
+  context.moveTo(item.corners[0].x * scale, item.corners[0].y * scale);
+  for (let index = 0; index < item.corners.length; index += 1) {
+    const control = curvePoints[index];
+    const end = item.corners[(index + 1) % item.corners.length];
+    context.quadraticCurveTo(control.x * scale, control.y * scale, end.x * scale, end.y * scale);
+  }
+  context.closePath();
+  context.fill();
+  context.stroke();
+
+  context.fillStyle = '#ffffff';
+  context.strokeStyle = 'rgba(15, 118, 110, 0.95)';
+  const edgeHandleSize = Math.max(8, context.lineWidth * 2.2);
+  context.fillStyle = 'rgba(255, 255, 255, 0.92)';
+  context.strokeStyle = 'rgba(15, 118, 110, 0.95)';
+  getImageEdgeMidpoints(item.corners).forEach((midpoint) => {
+    const x = midpoint.x * scale;
+    const y = midpoint.y * scale;
+    context.beginPath();
+    context.rect(x - edgeHandleSize / 2, y - edgeHandleSize / 2, edgeHandleSize, edgeHandleSize);
+    context.fill();
+    context.stroke();
+  });
+
+  const curveHandleRadius = Math.max(5, context.lineWidth * 1.6);
+  context.fillStyle = 'rgba(245, 158, 11, 0.92)';
+  context.strokeStyle = '#ffffff';
+  curvePoints.forEach((point) => {
+    const x = point.x * scale;
+    const y = point.y * scale;
+    context.beginPath();
+    context.moveTo(x, y - curveHandleRadius);
+    context.lineTo(x + curveHandleRadius, y);
+    context.lineTo(x, y + curveHandleRadius);
+    context.lineTo(x - curveHandleRadius, y);
+    context.closePath();
+    context.fill();
+    context.stroke();
+  });
+
+  context.fillStyle = '#ffffff';
+  context.strokeStyle = 'rgba(15, 118, 110, 0.95)';
+  item.corners.forEach((corner, index) => {
+    const x = corner.x * scale;
+    const y = corner.y * scale;
+    context.beginPath();
+    context.arc(x, y, Math.max(6, context.lineWidth * 1.8), 0, Math.PI * 2);
+    context.fill();
+    context.stroke();
+    context.fillStyle = 'rgba(15, 118, 110, 0.95)';
+    context.font = `${Math.max(10, context.lineWidth * 3)}px sans-serif`;
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.fillText(String(index + 1), x, y);
+    context.fillStyle = '#ffffff';
+  });
+  context.restore();
+}
+
+function drawImageOutputPreview(item) {
+  if (!item?.outputUrl) {
+    clearImageOutputCanvas();
+    return;
+  }
+
+  const image = new Image();
+  image.onload = () => {
+    if (item.id !== state.imageTool.activeId) {
+      return;
+    }
+    els.imageOutputCanvas.width = image.naturalWidth || item.outputWidth || image.width;
+    els.imageOutputCanvas.height = image.naturalHeight || item.outputHeight || image.height;
+    els.imageOutputCanvas.getContext('2d').drawImage(image, 0, 0);
+  };
+  image.src = item.outputUrl;
+}
+
+function removeImageItem(id) {
+  const index = state.imageTool.items.findIndex((item) => item.id === id);
+  if (index < 0) return;
+
+  const [item] = state.imageTool.items.splice(index, 1);
+  clearImageItemOutput(item, true);
+  if (state.imageTool.activeId === id) {
+    const nextItem = state.imageTool.items[Math.min(index, state.imageTool.items.length - 1)] || null;
+    state.imageTool.activeId = nextItem?.id || null;
+  }
+
+  const activeItem = getActiveImageItem();
+  state.imageTool.status = activeItem ? getImageItemStatus(activeItem) : 'Ready for an image.';
+  drawActiveImagePreviews();
+  render();
+}
+
+function clearRectifierImages() {
+  state.imageTool.items.forEach((item) => clearImageItemOutput(item, true));
+  state.imageTool.items = [];
+  state.imageTool.activeId = null;
+  state.imageTool.draggingHandle = null;
+  state.imageTool.status = 'Ready for an image.';
+  drawActiveImagePreviews();
+  render();
+}
+
+async function rotateActiveImage(delta) {
+  const item = getActiveImageItem();
+  if (!item || state.imageTool.processing) {
+    return;
+  }
+
+  const oldSource = getPreparedImageSource(item);
+  const oldSize = getImageNaturalSize(oldSource);
+  const previousCorners = item.corners?.length === 4
+    ? item.corners.map((corner) => ({ ...corner }))
+    : null;
+  const previousCurvePoints = item.curvePoints?.length
+    ? item.curvePoints.map((point) => point ? { ...point } : null)
+    : null;
+  const nextRotation = normalizeRotation((item.rotation || 0) + delta);
+  item.rotation = nextRotation;
+  clearImageItemOutput(item);
+
+  let shouldDetect = true;
+  if (previousCorners) {
+    item.corners = rotateImageQuad(previousCorners, delta, oldSize.width, oldSize.height);
+    if (previousCurvePoints?.length) {
+      item.curvePoints = rotateImageCurvePoints(previousCurvePoints, delta, oldSize.width, oldSize.height);
+    }
+    const newSource = getPreparedImageSource(item);
+    const newSize = getImageNaturalSize(newSource);
+    shouldDetect = !validateManualQuad(item.corners, newSize.width, newSize.height);
+    if (shouldDetect) {
+      item.corners = null;
+      item.curvePoints = null;
+    }
+  }
+  state.imageTool.status = previousCorners && !shouldDetect
+    ? `${item.fileName} rotated ${item.rotation} deg with selected area preserved.`
+    : `${item.fileName} rotated ${item.rotation} deg.`;
+  drawActiveImagePreviews();
+  render();
+  await processImageItem(item, { detect: shouldDetect });
+}
+
+function rotateImageQuad(corners, delta, width, height) {
+  const rotation = normalizeRotation(delta);
+  const rotated = corners.map((corner) => rotateImagePoint(corner, rotation, width, height));
+
+  if (rotation === 90) {
+    return [rotated[3], rotated[0], rotated[1], rotated[2]];
+  }
+  if (rotation === 180) {
+    return [rotated[2], rotated[3], rotated[0], rotated[1]];
+  }
+  if (rotation === 270) {
+    return [rotated[1], rotated[2], rotated[3], rotated[0]];
+  }
+  return rotated;
+}
+
+function rotateImageCurvePoints(curvePoints, delta, width, height) {
+  const rotation = normalizeRotation(delta);
+  const rotated = curvePoints.map((point) => point ? rotateImagePoint(point, rotation, width, height) : null);
+
+  if (rotation === 90) {
+    return [rotated[3], rotated[0], rotated[1], rotated[2]];
+  }
+  if (rotation === 180) {
+    return [rotated[2], rotated[3], rotated[0], rotated[1]];
+  }
+  if (rotation === 270) {
+    return [rotated[1], rotated[2], rotated[3], rotated[0]];
+  }
+  return rotated;
+}
+
+function rotateImagePoint(point, rotation, width, height) {
+  if (rotation === 90) {
+    return {
+      x: height - 1 - point.y,
+      y: point.x,
+    };
+  }
+  if (rotation === 180) {
+    return {
+      x: width - 1 - point.x,
+      y: height - 1 - point.y,
+    };
+  }
+  if (rotation === 270) {
+    return {
+      x: point.y,
+      y: width - 1 - point.x,
+    };
+  }
+  return { ...point };
+}
+
+async function useFullActiveImage() {
+  const item = getActiveImageItem();
+  if (!item || state.imageTool.processing) {
+    return;
+  }
+
+  const source = getPreparedImageSource(item);
+  const { width, height } = getImageNaturalSize(source);
+  item.corners = getFullImageQuad(width, height);
+  item.curvePoints = null;
+  item.fallback = true;
+  state.imageTool.status = `${item.fileName} set to full image.`;
+  await processImageItem(item, { detect: false });
+}
+
+function getImageCanvasPoint(event, item = getActiveImageItem()) {
+  if (!item) {
+    return null;
+  }
+
+  const rect = els.imageSourceCanvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) {
+    return null;
+  }
+
+  const source = getPreparedImageSource(item);
+  const { width, height } = getImageNaturalSize(source);
+  const canvasX = (event.clientX - rect.left) * (els.imageSourceCanvas.width / rect.width);
+  const canvasY = (event.clientY - rect.top) * (els.imageSourceCanvas.height / rect.height);
+
+  return {
+    x: clampNumber(canvasX * (width / els.imageSourceCanvas.width), 0, width - 1),
+    y: clampNumber(canvasY * (height / els.imageSourceCanvas.height), 0, height - 1),
+    width,
+    height,
+    screenScale: rect.width / width,
+  };
+}
+
+function getNearestImageCorner(point, corners) {
+  if (!point || !corners?.length) {
+    return -1;
+  }
+
+  const threshold = Math.max(18 / point.screenScale, Math.min(point.width, point.height) * 0.025);
+  let bestIndex = -1;
+  let bestDistance = Infinity;
+  corners.forEach((corner, index) => {
+    const distance = distanceBetween(point, corner);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = index;
+    }
+  });
+
+  return bestDistance <= threshold ? bestIndex : -1;
+}
+
+function getNearestImageEdge(point, corners) {
+  if (!point || !corners?.length) {
+    return -1;
+  }
+
+  const threshold = Math.max(14 / point.screenScale, Math.min(point.width, point.height) * 0.018);
+  let bestIndex = -1;
+  let bestDistance = Infinity;
+  for (let index = 0; index < corners.length; index += 1) {
+    const start = corners[index];
+    const end = corners[(index + 1) % corners.length];
+    const distance = pointToSegmentDistance(point, start, end);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = index;
+    }
+  }
+
+  return bestDistance <= threshold ? bestIndex : -1;
+}
+
+function getNearestImageCurveHandle(point, item) {
+  if (!point || !item?.corners?.length) {
+    return -1;
+  }
+
+  const threshold = Math.max(18 / point.screenScale, Math.min(point.width, point.height) * 0.024);
+  const curvePoints = getImageCurvePoints(item);
+  let bestIndex = -1;
+  let bestDistance = Infinity;
+  curvePoints.forEach((curvePoint, index) => {
+    const distance = distanceBetween(point, curvePoint);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = index;
+    }
+  });
+
+  return bestDistance <= threshold ? bestIndex : -1;
+}
+
+function getImageEdgeMidpoints(corners) {
+  return corners.map((corner, index) => {
+    const next = corners[(index + 1) % corners.length];
+    return {
+      x: (corner.x + next.x) / 2,
+      y: (corner.y + next.y) / 2,
+    };
+  });
+}
+
+function getImageCurvePoints(item) {
+  if (!item?.corners?.length) {
+    return [];
+  }
+
+  const midpoints = getImageEdgeMidpoints(item.corners);
+  if (!item.curvePoints?.length) {
+    return midpoints;
+  }
+
+  return midpoints.map((midpoint, index) => item.curvePoints[index] || midpoint);
+}
+
+function hasActiveCurve(item) {
+  if (!item?.curvePoints?.length || !item?.corners?.length) {
+    return false;
+  }
+
+  const source = getPreparedImageSource(item);
+  const { width, height } = getImageNaturalSize(source);
+  const tolerance = Math.max(3, Math.min(width, height) * 0.006);
+  const midpoints = getImageEdgeMidpoints(item.corners);
+  return item.curvePoints.some((point, index) => point && distanceBetween(point, midpoints[index]) > tolerance);
+}
+
+function setImageCurvePoint(item, edgeIndex, point) {
+  const curvePoints = getImageCurvePoints(item).map((curvePoint) => ({ ...curvePoint }));
+  curvePoints[edgeIndex] = { x: point.x, y: point.y };
+  item.curvePoints = curvePoints;
+}
+
+function normalizeCurvePointsForCorners(curvePoints, corners, width, height) {
+  const midpoints = getImageEdgeMidpoints(corners);
+  const tolerance = Math.max(3, Math.min(width, height) * 0.006);
+  const normalized = midpoints.map((midpoint, index) => {
+    const curvePoint = curvePoints[index] || midpoint;
+    return distanceBetween(curvePoint, midpoint) > tolerance
+      ? {
+          x: clampNumber(curvePoint.x, 0, width - 1),
+          y: clampNumber(curvePoint.y, 0, height - 1),
+        }
+      : midpoint;
+  });
+
+  return normalized.some((point, index) => distanceBetween(point, midpoints[index]) > tolerance)
+    ? normalized
+    : null;
+}
+
+function getEdgeCornerIndices(edgeIndex) {
+  return [edgeIndex, (edgeIndex + 1) % 4];
+}
+
+function pointToSegmentDistance(point, start, end) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const lengthSquared = dx * dx + dy * dy;
+  if (!lengthSquared) {
+    return distanceBetween(point, start);
+  }
+
+  const ratio = clampNumber(((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared, 0, 1);
+  return distanceBetween(point, {
+    x: start.x + dx * ratio,
+    y: start.y + dy * ratio,
+  });
+}
+
+function startCornerDrag(event) {
+  const item = getActiveImageItem();
+  if (!item?.corners || state.imageTool.processing) {
+    return;
+  }
+
+  const point = getImageCanvasPoint(event, item);
+  const cornerIndex = getNearestImageCorner(point, item.corners);
+  const curveIndex = cornerIndex < 0 ? getNearestImageCurveHandle(point, item) : -1;
+  const edgeIndex = cornerIndex < 0 && curveIndex < 0 ? getNearestImageEdge(point, item.corners) : -1;
+  if (cornerIndex < 0 && curveIndex < 0 && edgeIndex < 0) {
+    return;
+  }
+
+  const handleType = cornerIndex >= 0 ? 'corner' : curveIndex >= 0 ? 'curve' : 'edge';
+  const handleIndex = cornerIndex >= 0 ? cornerIndex : curveIndex >= 0 ? curveIndex : edgeIndex;
+
+  event.preventDefault();
+  els.imageSourceCanvas.setPointerCapture(event.pointerId);
+  state.imageTool.draggingHandle = {
+    type: handleType,
+    itemId: item.id,
+    pointerId: event.pointerId,
+    handleIndex,
+    startPoint: point,
+    startCorners: item.corners.map((corner) => ({ ...corner })),
+    startCurvePoints: getImageCurvePoints(item).map((curvePoint) => ({ ...curvePoint })),
+  };
+}
+
+function moveCornerDrag(event) {
+  const drag = state.imageTool.draggingHandle;
+  if (!drag || drag.pointerId !== event.pointerId) {
+    return;
+  }
+
+  const item = getActiveImageItem();
+  if (!item || item.id !== drag.itemId) {
+    return;
+  }
+
+  const point = getImageCanvasPoint(event, item);
+  if (!point) {
+    return;
+  }
+
+  const nextCorners = drag.startCorners.map((corner) => ({ ...corner }));
+  const nextCurvePoints = drag.startCurvePoints.map((curvePoint) => ({ ...curvePoint }));
+  if (drag.type === 'corner') {
+    nextCorners[drag.handleIndex] = {
+      x: point.x,
+      y: point.y,
+    };
+    const oldMidpoints = getImageEdgeMidpoints(drag.startCorners);
+    const newMidpoints = getImageEdgeMidpoints(nextCorners);
+    nextCurvePoints.forEach((curvePoint, index) => {
+      if (distanceBetween(curvePoint, oldMidpoints[index]) <= Math.max(2, Math.min(point.width, point.height) * 0.006)) {
+        nextCurvePoints[index] = newMidpoints[index];
+      }
+    });
+  } else if (drag.type === 'edge') {
+    const edgeIndices = getEdgeCornerIndices(drag.handleIndex);
+    const movingPoints = edgeIndices.map((index) => nextCorners[index]);
+    const delta = clampDeltaForPoints(
+      movingPoints,
+      point.x - drag.startPoint.x,
+      point.y - drag.startPoint.y,
+      point.width,
+      point.height,
+    );
+    edgeIndices.forEach((index) => {
+      nextCorners[index] = {
+        x: drag.startCorners[index].x + delta.x,
+        y: drag.startCorners[index].y + delta.y,
+      };
+    });
+
+    nextCurvePoints[drag.handleIndex] = {
+      x: drag.startCurvePoints[drag.handleIndex].x + delta.x,
+      y: drag.startCurvePoints[drag.handleIndex].y + delta.y,
+    };
+  } else if (drag.type === 'curve') {
+    nextCurvePoints[drag.handleIndex] = {
+      x: point.x,
+      y: point.y,
+    };
+  }
+
+  if (!validateManualQuad(nextCorners, point.width, point.height)) {
+    return;
+  }
+
+  item.corners = nextCorners;
+  item.curvePoints = normalizeCurvePointsForCorners(nextCurvePoints, nextCorners, point.width, point.height);
+  item.fallback = false;
+  clearImageOutputOnly(item);
+  clearImageOutputCanvas();
+  state.imageTool.status = `${item.fileName} ${drag.type} adjusted.`;
+  drawImageSourcePreview(item);
+  render();
+}
+
+function finishCornerDrag(event) {
+  const drag = state.imageTool.draggingHandle;
+  if (!drag || drag.pointerId !== event.pointerId) {
+    return;
+  }
+
+  const item = getActiveImageItem();
+  state.imageTool.draggingHandle = null;
+  try {
+    els.imageSourceCanvas.releasePointerCapture(event.pointerId);
+  } catch (error) {
+    console.warn('Could not release image corner pointer capture:', error);
+  }
+
+  if (item?.id === drag.itemId) {
+    processImageItem(item, { detect: false });
+  }
+}
+
+function clampDeltaForPoints(points, dx, dy, width, height) {
+  const bounds = points.reduce((limits, point) => ({
+    minDx: Math.max(limits.minDx, -point.x),
+    maxDx: Math.min(limits.maxDx, width - 1 - point.x),
+    minDy: Math.max(limits.minDy, -point.y),
+    maxDy: Math.min(limits.maxDy, height - 1 - point.y),
+  }), {
+    minDx: -Infinity,
+    maxDx: Infinity,
+    minDy: -Infinity,
+    maxDy: Infinity,
+  });
+
+  return {
+    x: clampNumber(dx, bounds.minDx, bounds.maxDx),
+    y: clampNumber(dy, bounds.minDy, bounds.maxDy),
+  };
+}
+
+function validateManualQuad(quad, width, height) {
+  if (!quad.every((point) => Number.isFinite(point?.x) && Number.isFinite(point?.y))) {
+    return false;
+  }
+  if (!quad.every((point) => point.x >= 0 && point.x <= width && point.y >= 0 && point.y <= height)) {
+    return false;
+  }
+
+  const area = polygonArea(quad);
+  const sideLengths = [
+    distanceBetween(quad[0], quad[1]),
+    distanceBetween(quad[1], quad[2]),
+    distanceBetween(quad[2], quad[3]),
+    distanceBetween(quad[3], quad[0]),
+  ];
+  return isConvexQuad(quad) && area > 100 && sideLengths.every((length) => length > 8);
+}
+
+function waitForFrame() {
+  return new Promise((resolve) => requestAnimationFrame(resolve));
+}
+
+function detectDocumentCorners(image) {
+  const { imageData, scale } = getScaledImageData(image, IMAGE_ANALYSIS_MAX_EDGE);
+  const edgePoints = buildEdgePoints(imageData);
+  const houghQuad = findDocumentCornersFromHough(edgePoints, imageData.width, imageData.height);
+  const extremeQuad = findDocumentCornersFromExtremes(edgePoints, imageData.width, imageData.height);
+  const detectedQuad = chooseDocumentQuad(houghQuad, extremeQuad, imageData.width, imageData.height);
+  const { width, height } = getImageNaturalSize(image);
+
+  if (!detectedQuad) {
+    return {
+      corners: getFullImageQuad(width, height),
+      fallback: true,
+    };
+  }
+
+  return {
+    corners: scaleQuad(clampQuadToImageBounds(detectedQuad, imageData.width, imageData.height), 1 / scale, 1 / scale),
+    fallback: false,
+  };
+}
+
+function getScaledImageData(image, maxEdge) {
+  const { width, height } = getImageNaturalSize(image);
+  const scale = Math.min(1, maxEdge / Math.max(width, height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(width * scale));
+  canvas.height = Math.max(1, Math.round(height * scale));
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  return {
+    imageData: context.getImageData(0, 0, canvas.width, canvas.height),
+    scale,
+  };
+}
+
+function buildEdgePoints(imageData) {
+  const { width, height, data } = imageData;
+  const gray = new Uint8ClampedArray(width * height);
+  const magnitudes = new Uint8ClampedArray(width * height);
+  const histogram = new Uint32Array(256);
+  const border = Math.max(4, Math.round(Math.min(width, height) * 0.015));
+
+  for (let index = 0, pixel = 0; index < data.length; index += 4, pixel += 1) {
+    gray[pixel] = Math.round(data[index] * 0.299 + data[index + 1] * 0.587 + data[index + 2] * 0.114);
+  }
+
+  for (let y = 1; y < height - 1; y += 1) {
+    for (let x = 1; x < width - 1; x += 1) {
+      const index = y * width + x;
+      const gx =
+        -gray[index - width - 1] + gray[index - width + 1] -
+        gray[index - 1] * 2 + gray[index + 1] * 2 -
+        gray[index + width - 1] + gray[index + width + 1];
+      const gy =
+        -gray[index - width - 1] - gray[index - width] * 2 - gray[index - width + 1] +
+        gray[index + width - 1] + gray[index + width] * 2 + gray[index + width + 1];
+      const magnitude = Math.min(255, Math.round(Math.hypot(gx, gy) / 4));
+      magnitudes[index] = magnitude;
+      if (x >= border && x < width - border && y >= border && y < height - border) {
+        histogram[magnitude] += 1;
+      }
+    }
+  }
+
+  const threshold = Math.max(18, getHistogramTopThreshold(histogram, 0.16));
+  const points = [];
+  for (let y = border; y < height - border; y += 1) {
+    for (let x = border; x < width - border; x += 1) {
+      const index = y * width + x;
+      if (magnitudes[index] >= threshold) {
+        points.push({ x, y, weight: magnitudes[index] });
+      }
+    }
+  }
+
+  if (points.length <= IMAGE_EDGE_POINT_LIMIT) {
+    return points;
+  }
+
+  const stride = Math.ceil(points.length / IMAGE_EDGE_POINT_LIMIT);
+  return points.filter((_, index) => index % stride === 0).slice(0, IMAGE_EDGE_POINT_LIMIT);
+}
+
+function getHistogramTopThreshold(histogram, topRatio) {
+  const total = histogram.reduce((sum, count) => sum + count, 0);
+  const target = Math.max(1, Math.round(total * topRatio));
+  let seen = 0;
+  for (let value = histogram.length - 1; value >= 0; value -= 1) {
+    seen += histogram[value];
+    if (seen >= target) {
+      return value;
+    }
+  }
+  return 28;
+}
+
+function findDocumentCornersFromHough(points, width, height) {
+  if (points.length < 80) {
+    return null;
+  }
+
+  const thetaCount = 180;
+  const rhoStep = Math.max(3, Math.round(Math.max(width, height) / 240));
+  const diagonal = Math.hypot(width, height);
+  const rhoBins = Math.ceil((diagonal * 2) / rhoStep) + 1;
+  const accumulator = new Uint16Array(thetaCount * rhoBins);
+  const cosines = [];
+  const sines = [];
+
+  for (let theta = 0; theta < thetaCount; theta += 1) {
+    const radians = theta * Math.PI / 180;
+    cosines[theta] = Math.cos(radians);
+    sines[theta] = Math.sin(radians);
+  }
+
+  points.forEach((point) => {
+    const centeredX = point.x - width / 2;
+    const centeredY = point.y - height / 2;
+    for (let theta = 0; theta < thetaCount; theta += 1) {
+      const rho = centeredX * cosines[theta] + centeredY * sines[theta];
+      const rhoIndex = Math.round((rho + diagonal) / rhoStep);
+      accumulator[theta * rhoBins + rhoIndex] += 1;
+    }
+  });
+
+  let maxVotes = 0;
+  for (let index = 0; index < accumulator.length; index += 1) {
+    if (accumulator[index] > maxVotes) {
+      maxVotes = accumulator[index];
+    }
+  }
+
+  if (maxVotes < 18) {
+    return null;
+  }
+
+  const minVotes = Math.max(12, Math.round(maxVotes * 0.18));
+  const candidates = [];
+
+  for (let theta = 0; theta < thetaCount; theta += 1) {
+    const thetaOffset = theta * rhoBins;
+    const previousThetaOffset = ((theta + thetaCount - 1) % thetaCount) * rhoBins;
+    const nextThetaOffset = ((theta + 1) % thetaCount) * rhoBins;
+    for (let rhoIndex = 1; rhoIndex < rhoBins - 1; rhoIndex += 1) {
+      const votes = accumulator[thetaOffset + rhoIndex];
+      if (votes < minVotes) {
+        continue;
+      }
+
+      if (
+        votes < accumulator[thetaOffset + rhoIndex - 1] ||
+        votes < accumulator[thetaOffset + rhoIndex + 1] ||
+        votes < accumulator[previousThetaOffset + rhoIndex] ||
+        votes < accumulator[nextThetaOffset + rhoIndex]
+      ) {
+        continue;
+      }
+
+      candidates.push({
+        theta,
+        rho: rhoIndex * rhoStep - diagonal,
+        votes,
+        cos: cosines[theta],
+        sin: sines[theta],
+      });
+    }
+  }
+
+  candidates.sort((a, b) => b.votes - a.votes);
+  const lines = [];
+  for (const candidate of candidates) {
+    const duplicate = lines.some((line) => (
+      Math.abs(angleDistance(candidate.theta, line.theta)) < 5 &&
+      Math.abs(candidate.rho - line.rho) < rhoStep * 6
+    ));
+    if (!duplicate) {
+      lines.push(candidate);
+    }
+    if (lines.length >= 140) {
+      break;
+    }
+  }
+
+  return chooseBestHoughQuad(lines, width, height, maxVotes);
+}
+
+function angleDistance(a, b) {
+  const diff = Math.abs(a - b) % 180;
+  return Math.min(diff, 180 - diff);
+}
+
+function chooseBestHoughQuad(lines, width, height, maxVotes) {
+  const sideCandidates = {
+    left: getLineCandidatesForSide(lines, 'left', width, height, maxVotes),
+    right: getLineCandidatesForSide(lines, 'right', width, height, maxVotes),
+    top: getLineCandidatesForSide(lines, 'top', width, height, maxVotes),
+    bottom: getLineCandidatesForSide(lines, 'bottom', width, height, maxVotes),
+  };
+
+  if (!sideCandidates.left.length || !sideCandidates.right.length || !sideCandidates.top.length || !sideCandidates.bottom.length) {
+    return null;
+  }
+
+  let bestQuad = null;
+  let bestScore = 0;
+  const minWidth = width * 0.18;
+  const minHeight = height * 0.18;
+
+  for (const left of sideCandidates.left) {
+    for (const right of sideCandidates.right) {
+      if (left.coordinate >= right.coordinate - minWidth) {
+        continue;
+      }
+
+      for (const top of sideCandidates.top) {
+        for (const bottom of sideCandidates.bottom) {
+          if (top.coordinate >= bottom.coordinate - minHeight) {
+            continue;
+          }
+
+          const quad = [
+            intersectLines(left, top, width, height),
+            intersectLines(right, top, width, height),
+            intersectLines(right, bottom, width, height),
+            intersectLines(left, bottom, width, height),
+          ];
+          if (!validateQuad(quad, width, height)) {
+            continue;
+          }
+
+          const score = scoreDocumentQuad(quad, width, height, [left, right, top, bottom]);
+          if (score > bestScore) {
+            bestScore = score;
+            bestQuad = quad;
+          }
+        }
+      }
+    }
+  }
+
+  return bestQuad;
+}
+
+function getLineCandidatesForSide(lines, side, width, height, maxVotes) {
+  const isVerticalSide = side === 'left' || side === 'right';
+  const size = isVerticalSide ? width : height;
+  const candidates = [];
+
+  lines.forEach((line) => {
+    const coordinate = getLineCoordinate(line, isVerticalSide, width, height);
+    if (!Number.isFinite(coordinate)) {
+      return;
+    }
+
+    const orientationStrength = isVerticalSide ? Math.abs(line.cos) : Math.abs(line.sin);
+    if (orientationStrength < 0.22 || coordinate < -size * 0.22 || coordinate > size * 1.22) {
+      return;
+    }
+
+    const relative = coordinate / size;
+    if ((side === 'left' || side === 'top') && relative > 0.78) {
+      return;
+    }
+    if ((side === 'right' || side === 'bottom') && relative < 0.22) {
+      return;
+    }
+
+    const outerPosition = side === 'left' || side === 'top'
+      ? 1 - clampNumber(relative, 0, 1)
+      : clampNumber(relative, 0, 1);
+    const preferredZone = side === 'left' || side === 'top'
+      ? relative <= 0.35 ? 1.2 : relative <= 0.58 ? 0.85 : 0.42
+      : relative >= 0.65 ? 1.2 : relative >= 0.42 ? 0.85 : 0.42;
+    const voteRatio = maxVotes ? line.votes / maxVotes : 0;
+    const sideScore = (0.3 + Math.sqrt(voteRatio)) *
+      (0.45 + orientationStrength) *
+      (0.5 + outerPosition * 1.45) *
+      preferredZone;
+
+    candidates.push({
+      ...line,
+      coordinate,
+      outerPosition,
+      voteRatio,
+      sideScore,
+    });
+  });
+
+  return candidates
+    .sort((a, b) => b.sideScore - a.sideScore)
+    .slice(0, 18);
+}
+
+function scoreDocumentQuad(quad, width, height, lines = []) {
+  const areaRatio = polygonArea(quad) / (width * height);
+  const bounds = getQuadBounds(quad);
+  const coverageX = clampNumber((bounds.maxX - bounds.minX) / width, 0, 1.4);
+  const coverageY = clampNumber((bounds.maxY - bounds.minY) / height, 0, 1.4);
+  const coverage = clampNumber(coverageX * coverageY, 0, 1.4);
+  const outerPosition = lines.length
+    ? lines.reduce((sum, line) => sum + (line.outerPosition || 0), 0) / lines.length
+    : getQuadOuterPosition(quad, width, height);
+  const support = lines.length
+    ? lines.reduce((sum, line) => sum + (line.voteRatio || 0), 0) / lines.length
+    : 0.35;
+
+  return Math.pow(Math.max(0, areaRatio), 2.5) *
+    Math.pow(Math.max(0, coverage), 1.6) *
+    (0.72 + outerPosition * 0.85) *
+    (0.62 + support * 0.72);
+}
+
+function chooseDocumentQuad(houghQuad, extremeQuad, width, height) {
+  if (!houghQuad) {
+    return extremeQuad;
+  }
+  if (!extremeQuad) {
+    return houghQuad;
+  }
+
+  const houghArea = polygonArea(houghQuad);
+  const extremeArea = polygonArea(extremeQuad);
+  const houghScore = scoreDocumentQuad(houghQuad, width, height);
+  const extremeScore = scoreDocumentQuad(extremeQuad, width, height);
+
+  if (extremeArea > houghArea * 1.28 && extremeScore > houghScore * 0.72) {
+    return extremeQuad;
+  }
+
+  return houghScore >= extremeScore * 0.82 ? houghQuad : extremeQuad;
+}
+
+function getQuadBounds(quad) {
+  return quad.reduce((bounds, point) => ({
+    minX: Math.min(bounds.minX, point.x),
+    minY: Math.min(bounds.minY, point.y),
+    maxX: Math.max(bounds.maxX, point.x),
+    maxY: Math.max(bounds.maxY, point.y),
+  }), {
+    minX: Infinity,
+    minY: Infinity,
+    maxX: -Infinity,
+    maxY: -Infinity,
+  });
+}
+
+function getQuadOuterPosition(quad, width, height) {
+  const bounds = getQuadBounds(quad);
+  const leftOuter = 1 - clampNumber(bounds.minX / width, 0, 1);
+  const rightOuter = clampNumber(bounds.maxX / width, 0, 1);
+  const topOuter = 1 - clampNumber(bounds.minY / height, 0, 1);
+  const bottomOuter = clampNumber(bounds.maxY / height, 0, 1);
+  return (leftOuter + rightOuter + topOuter + bottomOuter) / 4;
+}
+
+function getLineCoordinate(line, verticalSide, width, height) {
+  if (verticalSide) {
+    return width / 2 + line.rho / line.cos;
+  }
+  return height / 2 + line.rho / line.sin;
+}
+
+function intersectLines(first, second, width, height) {
+  const firstC = first.rho + first.cos * width / 2 + first.sin * height / 2;
+  const secondC = second.rho + second.cos * width / 2 + second.sin * height / 2;
+  const determinant = first.cos * second.sin - second.cos * first.sin;
+
+  if (Math.abs(determinant) < 0.0001) {
+    return { x: NaN, y: NaN };
+  }
+
+  return {
+    x: (firstC * second.sin - secondC * first.sin) / determinant,
+    y: (first.cos * secondC - second.cos * firstC) / determinant,
+  };
+}
+
+function findDocumentCornersFromExtremes(points, width, height) {
+  if (points.length < 20) {
+    return null;
+  }
+
+  const best = {
+    topLeft: { score: Infinity, point: null },
+    topRight: { score: -Infinity, point: null },
+    bottomRight: { score: -Infinity, point: null },
+    bottomLeft: { score: -Infinity, point: null },
+  };
+
+  points.forEach((point) => {
+    const topLeftScore = point.x + point.y;
+    const topRightScore = point.x - point.y;
+    const bottomRightScore = point.x + point.y;
+    const bottomLeftScore = point.y - point.x;
+
+    if (topLeftScore < best.topLeft.score) {
+      best.topLeft = { score: topLeftScore, point };
+    }
+    if (topRightScore > best.topRight.score) {
+      best.topRight = { score: topRightScore, point };
+    }
+    if (bottomRightScore > best.bottomRight.score) {
+      best.bottomRight = { score: bottomRightScore, point };
+    }
+    if (bottomLeftScore > best.bottomLeft.score) {
+      best.bottomLeft = { score: bottomLeftScore, point };
+    }
+  });
+
+  const quad = [best.topLeft.point, best.topRight.point, best.bottomRight.point, best.bottomLeft.point]
+    .map((point) => ({ x: point.x, y: point.y }));
+  return validateQuad(quad, width, height) ? quad : null;
+}
+
+function validateQuad(quad, width, height) {
+  if (!quad.every((point) => Number.isFinite(point?.x) && Number.isFinite(point?.y))) {
+    return false;
+  }
+
+  if (!isQuadWithinImageBounds(quad, width, height) || !isConvexQuad(quad)) {
+    return false;
+  }
+
+  const area = polygonArea(quad);
+  const imageArea = width * height;
+  const minSide = Math.min(width, height) * 0.08;
+  const sideLengths = [
+    distanceBetween(quad[0], quad[1]),
+    distanceBetween(quad[1], quad[2]),
+    distanceBetween(quad[2], quad[3]),
+    distanceBetween(quad[3], quad[0]),
+  ];
+
+  return area > imageArea * 0.08 &&
+    area < imageArea * 1.55 &&
+    sideLengths.every((length) => length > minSide);
+}
+
+function isQuadWithinImageBounds(quad, width, height) {
+  const tolerance = Math.max(2, Math.min(width, height) * 0.006);
+  return quad.every((point) => (
+    point.x >= -tolerance &&
+    point.x <= width - 1 + tolerance &&
+    point.y >= -tolerance &&
+    point.y <= height - 1 + tolerance
+  ));
+}
+
+function clampQuadToImageBounds(quad, width, height) {
+  return quad.map((point) => ({
+    x: clampNumber(point.x, 0, width - 1),
+    y: clampNumber(point.y, 0, height - 1),
+  }));
+}
+
+function isConvexQuad(quad) {
+  let sign = 0;
+  for (let index = 0; index < quad.length; index += 1) {
+    const a = quad[index];
+    const b = quad[(index + 1) % quad.length];
+    const c = quad[(index + 2) % quad.length];
+    const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+    if (Math.abs(cross) < 0.0001) {
+      return false;
+    }
+    const currentSign = Math.sign(cross);
+    if (sign && currentSign !== sign) {
+      return false;
+    }
+    sign = currentSign;
+  }
+  return true;
+}
+
+function polygonArea(points) {
+  let sum = 0;
+  for (let index = 0; index < points.length; index += 1) {
+    const current = points[index];
+    const next = points[(index + 1) % points.length];
+    sum += current.x * next.y - next.x * current.y;
+  }
+  return Math.abs(sum) / 2;
+}
+
+function distanceBetween(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function scaleQuad(quad, scaleX, scaleY) {
+  return quad.map((point) => ({
+    x: point.x * scaleX,
+    y: point.y * scaleY,
+  }));
+}
+
+function getFullImageQuad(width, height) {
+  return [
+    { x: 0, y: 0 },
+    { x: width - 1, y: 0 },
+    { x: width - 1, y: height - 1 },
+    { x: 0, y: height - 1 },
+  ];
+}
+
+function isFullImageQuad(corners, width, height) {
+  const full = getFullImageQuad(width, height);
+  const tolerance = Math.max(2, Math.max(width, height) * 0.005);
+  return corners?.length === 4 && corners.every((corner, index) => distanceBetween(corner, full[index]) <= tolerance);
+}
+
+function warpImageToRectangle(image, corners, curvePoints = null) {
+  if (curvePoints?.length) {
+    const midpoints = getImageEdgeMidpoints(corners);
+    const tolerance = Math.max(3, Math.min(...getImageNaturalSizeArray(image)) * 0.006);
+    const hasCurve = curvePoints.some((point, index) => point && distanceBetween(point, midpoints[index]) > tolerance);
+    if (hasCurve) {
+      return warpCurvedImageToRectangle(image, corners, curvePoints);
+    }
+  }
+
+  const { width: sourceWidth, height: sourceHeight } = getImageNaturalSize(image);
+  const targetWidth = Math.max(distanceBetween(corners[0], corners[1]), distanceBetween(corners[2], corners[3]));
+  const targetHeight = Math.max(distanceBetween(corners[0], corners[3]), distanceBetween(corners[1], corners[2]));
+  const outputScale = Math.min(1, IMAGE_OUTPUT_MAX_EDGE / Math.max(targetWidth, targetHeight));
+  const outputWidth = Math.max(32, Math.round(targetWidth * outputScale));
+  const outputHeight = Math.max(32, Math.round(targetHeight * outputScale));
+  const sampleScale = Math.min(1, (IMAGE_OUTPUT_MAX_EDGE * 1.25) / Math.max(sourceWidth, sourceHeight));
+  const sampleWidth = Math.max(1, Math.round(sourceWidth * sampleScale));
+  const sampleHeight = Math.max(1, Math.round(sourceHeight * sampleScale));
+  const sampleCanvas = document.createElement('canvas');
+  sampleCanvas.width = sampleWidth;
+  sampleCanvas.height = sampleHeight;
+  const sampleContext = sampleCanvas.getContext('2d', { willReadFrequently: true });
+  sampleContext.drawImage(image, 0, 0, sampleWidth, sampleHeight);
+
+  const sourceData = sampleContext.getImageData(0, 0, sampleWidth, sampleHeight).data;
+  const imageData = sampleContext.createImageData(outputWidth, outputHeight);
+  const outputData = imageData.data;
+  const sampleCorners = scaleQuad(corners, sampleScale, sampleScale);
+  const matrix = squareToQuadHomography(sampleCorners);
+
+  for (let y = 0; y < outputHeight; y += 1) {
+    const v = outputHeight === 1 ? 0 : y / (outputHeight - 1);
+    for (let x = 0; x < outputWidth; x += 1) {
+      const u = outputWidth === 1 ? 0 : x / (outputWidth - 1);
+      const denominator = matrix.g * u + matrix.h * v + 1;
+      const sourceX = (matrix.a * u + matrix.b * v + matrix.c) / denominator;
+      const sourceY = (matrix.d * u + matrix.e * v + matrix.f) / denominator;
+      writeBilinearSample(sourceData, outputData, sampleWidth, sampleHeight, sourceX, sourceY, (y * outputWidth + x) * 4);
+    }
+  }
+
+  return {
+    width: outputWidth,
+    height: outputHeight,
+    imageData,
+  };
+}
+
+function getImageNaturalSizeArray(image) {
+  const { width, height } = getImageNaturalSize(image);
+  return [width, height];
+}
+
+function warpCurvedImageToRectangle(image, corners, curvePoints) {
+  const { width: sourceWidth, height: sourceHeight } = getImageNaturalSize(image);
+  const edgeCurves = buildBoundaryCurves(corners, curvePoints);
+  const targetWidth = Math.max(
+    polylineLength(edgeCurves.top),
+    polylineLength(edgeCurves.bottom),
+    distanceBetween(corners[0], corners[1]),
+    distanceBetween(corners[2], corners[3]),
+  );
+  const targetHeight = Math.max(
+    polylineLength(edgeCurves.left),
+    polylineLength(edgeCurves.right),
+    distanceBetween(corners[0], corners[3]),
+    distanceBetween(corners[1], corners[2]),
+  );
+  const outputScale = Math.min(1, IMAGE_OUTPUT_MAX_EDGE / Math.max(targetWidth, targetHeight));
+  const outputWidth = Math.max(32, Math.round(targetWidth * outputScale));
+  const outputHeight = Math.max(32, Math.round(targetHeight * outputScale));
+  const sampleScale = Math.min(1, (IMAGE_OUTPUT_MAX_EDGE * 1.25) / Math.max(sourceWidth, sourceHeight));
+  const sampleWidth = Math.max(1, Math.round(sourceWidth * sampleScale));
+  const sampleHeight = Math.max(1, Math.round(sourceHeight * sampleScale));
+  const sampleCanvas = document.createElement('canvas');
+  sampleCanvas.width = sampleWidth;
+  sampleCanvas.height = sampleHeight;
+  const sampleContext = sampleCanvas.getContext('2d', { willReadFrequently: true });
+  sampleContext.drawImage(image, 0, 0, sampleWidth, sampleHeight);
+
+  const scaledCorners = scaleQuad(corners, sampleScale, sampleScale);
+  const scaledCurvePoints = scaleQuad(curvePoints, sampleScale, sampleScale);
+  const scaledEdgeCurves = buildBoundaryCurves(scaledCorners, scaledCurvePoints);
+  const sourceData = sampleContext.getImageData(0, 0, sampleWidth, sampleHeight).data;
+  const imageData = sampleContext.createImageData(outputWidth, outputHeight);
+  const outputData = imageData.data;
+
+  for (let y = 0; y < outputHeight; y += 1) {
+    const v = outputHeight === 1 ? 0 : y / (outputHeight - 1);
+    for (let x = 0; x < outputWidth; x += 1) {
+      const u = outputWidth === 1 ? 0 : x / (outputWidth - 1);
+      const sourcePoint = sampleCurvedPatch(scaledEdgeCurves, u, v);
+      writeBilinearSample(sourceData, outputData, sampleWidth, sampleHeight, sourcePoint.x, sourcePoint.y, (y * outputWidth + x) * 4);
+    }
+  }
+
+  return {
+    width: outputWidth,
+    height: outputHeight,
+    imageData,
+  };
+}
+
+function buildBoundaryCurves(corners, curvePoints) {
+  return {
+    top: buildQuadraticCurvePoints(corners[0], curvePoints[0], corners[1]),
+    right: buildQuadraticCurvePoints(corners[1], curvePoints[1], corners[2]),
+    bottom: buildQuadraticCurvePoints(corners[3], curvePoints[2], corners[2]),
+    left: buildQuadraticCurvePoints(corners[0], curvePoints[3], corners[3]),
+  };
+}
+
+function buildQuadraticCurvePoints(start, control, end, segments = 32) {
+  const points = [];
+  for (let index = 0; index <= segments; index += 1) {
+    const t = index / segments;
+    const inverse = 1 - t;
+    points.push({
+      x: inverse * inverse * start.x + 2 * inverse * t * control.x + t * t * end.x,
+      y: inverse * inverse * start.y + 2 * inverse * t * control.y + t * t * end.y,
+    });
+  }
+  return points;
+}
+
+function sampleCurvedPatch(edges, u, v) {
+  const top = samplePolyline(edges.top, u);
+  const bottom = samplePolyline(edges.bottom, u);
+  const left = samplePolyline(edges.left, v);
+  const right = samplePolyline(edges.right, v);
+  const topLeft = edges.top[0];
+  const topRight = edges.top[edges.top.length - 1];
+  const bottomLeft = edges.left[edges.left.length - 1];
+  const bottomRight = edges.right[edges.right.length - 1];
+
+  const horizontal = lerpPoint(top, bottom, v);
+  const vertical = lerpPoint(left, right, u);
+  const bilinear = {
+    x:
+      topLeft.x * (1 - u) * (1 - v) +
+      topRight.x * u * (1 - v) +
+      bottomLeft.x * (1 - u) * v +
+      bottomRight.x * u * v,
+    y:
+      topLeft.y * (1 - u) * (1 - v) +
+      topRight.y * u * (1 - v) +
+      bottomLeft.y * (1 - u) * v +
+      bottomRight.y * u * v,
+  };
+
+  return {
+    x: horizontal.x + vertical.x - bilinear.x,
+    y: horizontal.y + vertical.y - bilinear.y,
+  };
+}
+
+function samplePolyline(points, t) {
+  if (t <= 0) return points[0];
+  if (t >= 1) return points[points.length - 1];
+
+  const lengths = [];
+  let total = 0;
+  for (let index = 0; index < points.length - 1; index += 1) {
+    total += distanceBetween(points[index], points[index + 1]);
+    lengths.push(total);
+  }
+
+  const target = total * t;
+  const segmentIndex = lengths.findIndex((length) => length >= target);
+  const safeIndex = Math.max(0, segmentIndex);
+  const previousLength = safeIndex ? lengths[safeIndex - 1] : 0;
+  const segmentLength = lengths[safeIndex] - previousLength || 1;
+  const localT = (target - previousLength) / segmentLength;
+  return lerpPoint(points[safeIndex], points[safeIndex + 1], localT);
+}
+
+function polylineLength(points) {
+  let length = 0;
+  for (let index = 0; index < points.length - 1; index += 1) {
+    length += distanceBetween(points[index], points[index + 1]);
+  }
+  return length;
+}
+
+function lerpPoint(start, end, t) {
+  return {
+    x: start.x + (end.x - start.x) * t,
+    y: start.y + (end.y - start.y) * t,
+  };
+}
+
+function squareToQuadHomography(quad) {
+  const [topLeft, topRight, bottomRight, bottomLeft] = quad;
+  const dx1 = topRight.x - bottomRight.x;
+  const dy1 = topRight.y - bottomRight.y;
+  const dx2 = bottomLeft.x - bottomRight.x;
+  const dy2 = bottomLeft.y - bottomRight.y;
+  const dx3 = topLeft.x - topRight.x + bottomRight.x - bottomLeft.x;
+  const dy3 = topLeft.y - topRight.y + bottomRight.y - bottomLeft.y;
+
+  if (Math.abs(dx3) < 0.0001 && Math.abs(dy3) < 0.0001) {
+    return {
+      a: topRight.x - topLeft.x,
+      b: bottomLeft.x - topLeft.x,
+      c: topLeft.x,
+      d: topRight.y - topLeft.y,
+      e: bottomLeft.y - topLeft.y,
+      f: topLeft.y,
+      g: 0,
+      h: 0,
+    };
+  }
+
+  const determinant = dx1 * dy2 - dx2 * dy1;
+  if (Math.abs(determinant) < 0.0001) {
+    return {
+      a: topRight.x - topLeft.x,
+      b: bottomLeft.x - topLeft.x,
+      c: topLeft.x,
+      d: topRight.y - topLeft.y,
+      e: bottomLeft.y - topLeft.y,
+      f: topLeft.y,
+      g: 0,
+      h: 0,
+    };
+  }
+
+  const g = (dx3 * dy2 - dx2 * dy3) / determinant;
+  const h = (dx1 * dy3 - dx3 * dy1) / determinant;
+
+  return {
+    a: topRight.x - topLeft.x + g * topRight.x,
+    b: bottomLeft.x - topLeft.x + h * bottomLeft.x,
+    c: topLeft.x,
+    d: topRight.y - topLeft.y + g * topRight.y,
+    e: bottomLeft.y - topLeft.y + h * bottomLeft.y,
+    f: topLeft.y,
+    g,
+    h,
+  };
+}
+
+function writeBilinearSample(sourceData, outputData, sourceWidth, sourceHeight, sourceX, sourceY, outputIndex) {
+  const x = clampNumber(sourceX, 0, sourceWidth - 1);
+  const y = clampNumber(sourceY, 0, sourceHeight - 1);
+  const x0 = Math.floor(x);
+  const y0 = Math.floor(y);
+  const x1 = Math.min(sourceWidth - 1, x0 + 1);
+  const y1 = Math.min(sourceHeight - 1, y0 + 1);
+  const xWeight = x - x0;
+  const yWeight = y - y0;
+  const topLeftIndex = (y0 * sourceWidth + x0) * 4;
+  const topRightIndex = (y0 * sourceWidth + x1) * 4;
+  const bottomLeftIndex = (y1 * sourceWidth + x0) * 4;
+  const bottomRightIndex = (y1 * sourceWidth + x1) * 4;
+
+  for (let channel = 0; channel < 4; channel += 1) {
+    const top = sourceData[topLeftIndex + channel] * (1 - xWeight) + sourceData[topRightIndex + channel] * xWeight;
+    const bottom = sourceData[bottomLeftIndex + channel] * (1 - xWeight) + sourceData[bottomRightIndex + channel] * xWeight;
+    outputData[outputIndex + channel] = Math.round(top * (1 - yWeight) + bottom * yWeight);
+  }
+}
+
+function canvasToBlob(canvas, type) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) {
+        resolve(blob);
+        return;
+      }
+      reject(new Error('Canvas export failed.'));
+    }, type);
+  });
+}
+
+function downloadRectifiedImage() {
+  const item = getActiveImageItem();
+  if (!item?.outputUrl) {
+    return;
+  }
+
+  const link = document.createElement('a');
+  link.href = item.outputUrl;
+  link.download = item.outputName || 'rectified-image.png';
+  document.body.append(link);
+  link.click();
+  link.remove();
+}
+
+async function downloadAllRectifiedImages() {
+  const readyItems = state.imageTool.items.filter((item) => item.outputBlob);
+  if (!readyItems.length || state.imageTool.processing) {
+    return;
+  }
+
+  state.imageTool.processing = true;
+  state.imageTool.status = `Packaging ${pluralize(readyItems.length, 'image')}...`;
+  render();
+  await waitForFrame();
+
+  try {
+    const files = [];
+    const usedNames = new Map();
+    for (const item of readyItems) {
+      files.push({
+        name: getUniqueZipName(item.outputName || buildRectifiedImageName(item.fileName), usedNames),
+        bytes: new Uint8Array(await item.outputBlob.arrayBuffer()),
+      });
+    }
+
+    const zipBytes = buildZipArchive(files);
+    const blob = new Blob([zipBytes], { type: 'application/zip' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = buildRectifiedZipName();
+    document.body.append(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    state.imageTool.status = `Packaged ${pluralize(files.length, 'image')} into ZIP.`;
+  } catch (error) {
+    console.error('Could not package rectified images:', error);
+    state.imageTool.status = 'Could not package the images.';
+  } finally {
+    state.imageTool.processing = false;
+    render();
+  }
+}
+
+function getUniqueZipName(name, usedNames) {
+  const safeName = name.replace(/[\\/:*?"<>|]+/g, '-');
+  const dotIndex = safeName.lastIndexOf('.');
+  const baseName = dotIndex > 0 ? safeName.slice(0, dotIndex) : safeName;
+  const extension = dotIndex > 0 ? safeName.slice(dotIndex) : '';
+  const count = usedNames.get(safeName) || 0;
+  usedNames.set(safeName, count + 1);
+  return count ? `${baseName}-${count + 1}${extension}` : safeName;
+}
+
+function buildRectifiedZipName() {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19).replace('T', '_');
+  return `rectified-images-${stamp}.zip`;
+}
+
+function buildZipArchive(files) {
+  const chunks = [];
+  const centralDirectory = [];
+  let offset = 0;
+
+  files.forEach((file) => {
+    const nameBytes = new TextEncoder().encode(file.name);
+    const crc = crc32(file.bytes);
+    const localHeader = buildZipLocalHeader(nameBytes, file.bytes.length, crc);
+    chunks.push(localHeader, file.bytes);
+    centralDirectory.push(buildZipCentralDirectoryHeader(nameBytes, file.bytes.length, crc, offset));
+    offset += localHeader.length + file.bytes.length;
+  });
+
+  const centralDirectoryOffset = offset;
+  centralDirectory.forEach((header) => {
+    chunks.push(header);
+    offset += header.length;
+  });
+
+  chunks.push(buildZipEndRecord(files.length, offset - centralDirectoryOffset, centralDirectoryOffset));
+  return concatUint8Arrays(chunks);
+}
+
+function buildZipLocalHeader(nameBytes, size, crc) {
+  const header = new Uint8Array(30 + nameBytes.length);
+  const view = new DataView(header.buffer);
+  view.setUint32(0, 0x04034b50, true);
+  view.setUint16(4, 20, true);
+  view.setUint16(6, 0x0800, true);
+  view.setUint16(8, 0, true);
+  view.setUint16(10, 0, true);
+  view.setUint16(12, 0, true);
+  view.setUint32(14, crc, true);
+  view.setUint32(18, size, true);
+  view.setUint32(22, size, true);
+  view.setUint16(26, nameBytes.length, true);
+  view.setUint16(28, 0, true);
+  header.set(nameBytes, 30);
+  return header;
+}
+
+function buildZipCentralDirectoryHeader(nameBytes, size, crc, offset) {
+  const header = new Uint8Array(46 + nameBytes.length);
+  const view = new DataView(header.buffer);
+  view.setUint32(0, 0x02014b50, true);
+  view.setUint16(4, 20, true);
+  view.setUint16(6, 20, true);
+  view.setUint16(8, 0x0800, true);
+  view.setUint16(10, 0, true);
+  view.setUint16(12, 0, true);
+  view.setUint16(14, 0, true);
+  view.setUint32(16, crc, true);
+  view.setUint32(20, size, true);
+  view.setUint32(24, size, true);
+  view.setUint16(28, nameBytes.length, true);
+  view.setUint16(30, 0, true);
+  view.setUint16(32, 0, true);
+  view.setUint16(34, 0, true);
+  view.setUint16(36, 0, true);
+  view.setUint32(38, 0, true);
+  view.setUint32(42, offset, true);
+  header.set(nameBytes, 46);
+  return header;
+}
+
+function buildZipEndRecord(fileCount, centralDirectorySize, centralDirectoryOffset) {
+  const record = new Uint8Array(22);
+  const view = new DataView(record.buffer);
+  view.setUint32(0, 0x06054b50, true);
+  view.setUint16(4, 0, true);
+  view.setUint16(6, 0, true);
+  view.setUint16(8, fileCount, true);
+  view.setUint16(10, fileCount, true);
+  view.setUint32(12, centralDirectorySize, true);
+  view.setUint32(16, centralDirectoryOffset, true);
+  view.setUint16(20, 0, true);
+  return record;
+}
+
+function concatUint8Arrays(chunks) {
+  const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const output = new Uint8Array(totalLength);
+  let offset = 0;
+  chunks.forEach((chunk) => {
+    output.set(chunk, offset);
+    offset += chunk.length;
+  });
+  return output;
+}
+
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (let index = 0; index < bytes.length; index += 1) {
+    crc = (crc >>> 8) ^ CRC32_TABLE[(crc ^ bytes[index]) & 0xff];
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+const CRC32_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let index = 0; index < table.length; index += 1) {
+    let value = index;
+    for (let bit = 0; bit < 8; bit += 1) {
+      value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+    }
+    table[index] = value >>> 0;
+  }
+  return table;
+})();
+
+function clampNumber(value, min, max) {
+  return Math.max(min, Math.min(max, value));
 }
 
 function clearQueue() {
@@ -2261,12 +4194,35 @@ function openFilePicker() {
   }
 }
 
+function openImageFilePicker() {
+  if (!state.imageTool.processing) {
+    els.imageInput.click();
+  }
+}
+
 els.addButton.addEventListener('click', openFilePicker);
 els.dropzone.addEventListener('click', openFilePicker);
 els.fileInput.addEventListener('change', (event) => {
   addFiles(event.target.files);
   event.target.value = '';
 });
+els.imageChooseButton.addEventListener('click', openImageFilePicker);
+els.imageDropzone.addEventListener('click', openImageFilePicker);
+els.imageInput.addEventListener('change', (event) => {
+  addRectifierImages(event.target.files);
+  event.target.value = '';
+});
+els.imageAutoButton.addEventListener('click', processRectifierImage);
+els.imageRotateLeftButton.addEventListener('click', () => rotateActiveImage(-90));
+els.imageRotateRightButton.addEventListener('click', () => rotateActiveImage(90));
+els.imageResetCornersButton.addEventListener('click', useFullActiveImage);
+els.imageClearButton.addEventListener('click', clearRectifierImages);
+els.imageDownloadButton.addEventListener('click', downloadRectifiedImage);
+els.imageDownloadAllButton.addEventListener('click', downloadAllRectifiedImages);
+els.imageSourceCanvas.addEventListener('pointerdown', startCornerDrag);
+els.imageSourceCanvas.addEventListener('pointermove', moveCornerDrag);
+els.imageSourceCanvas.addEventListener('pointerup', finishCornerDrag);
+els.imageSourceCanvas.addEventListener('pointercancel', finishCornerDrag);
 els.clearButton.addEventListener('click', clearQueue);
 els.previewButton.addEventListener('click', previewCombination);
 els.selectAllPages.addEventListener('click', () => selectActivePages('all'));
@@ -2473,6 +4429,37 @@ els.watermarkOpacity.addEventListener('input', () => {
 els.watermarkSize.addEventListener('input', () => {
   clearOutput();
   state.notice = '';
+  render();
+});
+
+['dragenter', 'dragover'].forEach((eventName) => {
+  els.imageDropzone.addEventListener(eventName, (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!state.imageTool.processing) {
+      els.imageDropzone.classList.add('is-dragging');
+    }
+  });
+});
+
+['dragleave', 'drop'].forEach((eventName) => {
+  els.imageDropzone.addEventListener(eventName, (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    els.imageDropzone.classList.remove('is-dragging');
+  });
+});
+
+els.imageDropzone.addEventListener('drop', (event) => {
+  if (state.imageTool.processing) return;
+  const files = [...(event.dataTransfer?.files || [])];
+  const imageFiles = files.filter(isImageFile);
+  if (imageFiles.length) {
+    addRectifierImages(imageFiles);
+    return;
+  }
+
+  state.imageTool.status = 'Drop a JPG, PNG, or WebP image.';
   render();
 });
 

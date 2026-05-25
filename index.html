@@ -373,6 +373,55 @@
 
         <div class="page-grid" id="page-grid" aria-live="polite"></div>
       </section>
+
+      <section class="image-panel" aria-labelledby="image-title">
+        <div class="panel-head">
+          <div>
+            <h2 id="image-title">Image Rectifier</h2>
+            <p id="image-note">Upload a photographed document to extract and square the page.</p>
+          </div>
+        </div>
+
+        <button type="button" class="image-dropzone" id="image-dropzone">
+          <span class="dropzone-kicker">Import image</span>
+          <span class="dropzone-title">Drop JPG, PNG, or WebP files here</span>
+          <span class="dropzone-hint" id="image-drop-hint">No image selected.</span>
+        </button>
+
+        <input id="image-input" type="file" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp" multiple hidden>
+
+        <div class="image-actions">
+          <button type="button" id="image-choose-btn">Choose image</button>
+          <button type="button" id="image-auto-btn">Auto extract</button>
+          <button type="button" id="image-rotate-left-btn">Rotate left</button>
+          <button type="button" id="image-rotate-right-btn">Rotate right</button>
+          <button type="button" id="image-reset-corners-btn">Full image</button>
+          <button type="button" id="image-clear-btn">Clear images</button>
+          <button type="button" class="primary" id="image-download-btn">Download PNG</button>
+          <button type="button" class="primary" id="image-download-all-btn">Download all ZIP</button>
+        </div>
+
+        <div class="image-status" id="image-status" aria-live="polite">Ready for an image.</div>
+        <div class="image-list" id="image-list" aria-live="polite"></div>
+
+        <div class="image-preview-grid">
+          <figure class="image-preview">
+            <figcaption>Source</figcaption>
+            <div class="image-canvas-shell">
+              <canvas id="image-source-canvas" hidden></canvas>
+              <div class="image-placeholder" id="image-source-placeholder">Source image will appear here.</div>
+            </div>
+          </figure>
+
+          <figure class="image-preview">
+            <figcaption>Aligned</figcaption>
+            <div class="image-canvas-shell">
+              <canvas id="image-output-canvas" hidden></canvas>
+              <div class="image-placeholder" id="image-output-placeholder">Aligned rectangle will appear here.</div>
+            </div>
+          </figure>
+        </div>
+      </section>
     </main>
   </div>
 

@@ -9,6 +9,9 @@ Static browser-only PDF toolbox for Cloudflare.
 - Select pages visually from the active PDF
 - Insert blank pages after selected source pages
 - Add text or image stamps to selected pages
+- Upload photographed document images and auto-align each trapezoid into a rectangular PNG
+- Adjust detected image corners, straight edges, or curved edges manually and rotate source images before export
+- Download one rectified image or all generated images as a ZIP
 - Extract selected pages into a new PDF
 - Remove selected pages from PDFs
 - Rotate selected pages while leaving the rest of each PDF in place
