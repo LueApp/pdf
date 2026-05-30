@@ -181,6 +181,88 @@ function stripPdfExtension(value) {
   return value.replace(/\.pdf$/i, '');
 }
 
+const SECTION_NAME_ACRONYMS = new Set([
+  'API',
+  'CSV',
+  'DNS',
+  'FAQ',
+  'GPS',
+  'HR',
+  'HTTP',
+  'HTTPS',
+  'ID',
+  'IP',
+  'IT',
+  'JSON',
+  'PDF',
+  'QA',
+  'SKU',
+  'SQL',
+  'UI',
+  'URL',
+  'UX',
+  'VAT',
+  'XML',
+]);
+
+function formatSectionNameFromFileName(fileName) {
+  const baseName = stripPdfExtension(fileName)
+    .replace(/[_-]+/g, ' ')
+    .replace(/([a-z\d])([A-Z])/g, '$1 $2')
+    .replace(/([A-Za-z])(\d)/g, '$1 $2')
+    .replace(/(\d)([A-Za-z])/g, '$1 $2')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!baseName) {
+    return '';
+  }
+
+  const forceTitleCase = !/[a-z]/.test(baseName);
+  return baseName
+    .split(' ')
+    .map((word) => formatSectionNameWord(word, forceTitleCase))
+    .join(' ');
+}
+
+function formatSectionNameWord(word, forceTitleCase = false) {
+  if (!word) {
+    return '';
+  }
+  if (/^\d+$/.test(word)) {
+    return word;
+  }
+
+  const upper = word.toUpperCase();
+  if (SECTION_NAME_ACRONYMS.has(upper)) {
+    return upper;
+  }
+
+  if (/[0-9&]/.test(word)) {
+    return upper;
+  }
+
+  if (!forceTitleCase && /^[A-Z]{2,}$/.test(word)) {
+    return word;
+  }
+
+  return upper.charAt(0) + upper.slice(1).toLowerCase();
+}
+
+function getSectionName(item, sectionNumber = 0) {
+  const manualName = cleanTextInput(item.sectionName);
+  if (manualName) {
+    return manualName;
+  }
+
+  const formattedName = formatSectionNameFromFileName(item.name);
+  if (formattedName) {
+    return formattedName;
+  }
+
+  return sectionNumber ? `Section ${sectionNumber}` : 'Section';
+}
+
 function getToolMode() {
   return els.toolMode.value || 'combine';
 }
@@ -459,13 +541,15 @@ function buildAssemblyPlan(frontPageCount) {
   return state.items.map((item, index) => {
     const selection = resolvePageSelection(item.range, item.pages, toolMode);
     const selectedCount = selection.ok ? selection.indices.length + countInsertedBlanks(item, selection.indices) : 0;
+    const sourceSelectedCount = selection.ok ? selection.indices.length : 0;
     const blankBefore = isCombine && index > 0 && els.duplexBlanks.checked && pageCount % 2 === 1;
+    const sectionName = getSectionName(item, index + 1);
 
     if (blankBefore) {
       pageCount += 1;
     }
 
-    const separatorPage = isCombine && index > 0 && els.separatorPages.checked ? pageCount + 1 : null;
+    const separatorPage = isCombine && els.separatorPages.checked ? pageCount + 1 : null;
     if (separatorPage) {
       pageCount += 1;
     }
@@ -477,16 +561,17 @@ function buildAssemblyPlan(frontPageCount) {
       item,
       index,
       selectedCount,
+      sourceSelectedCount,
       indices: selection.ok ? selection.indices : [],
       rotatedSet: selection.ok ? selection.rotatedSet : new Set(),
       duplicatedSet: selection.ok ? selection.duplicatedSet : new Set(),
       rotatedCount: selection.ok ? selection.rotatedCount : 0,
       duplicatedCount: selection.ok ? selection.duplicatedCount : 0,
       rangeLabel: item.range.trim() || getRangePlaceholder(toolMode, item.pages),
+      sectionName,
       blankBefore,
       separatorPage,
       startPage,
-      sectionStartPage: separatorPage || startPage,
     };
   });
 }
@@ -855,6 +940,32 @@ function buildFileOptions(item) {
   options.className = 'file-options';
 
   const selection = resolvePageSelection(item.range, item.pages, toolMode);
+
+  if (toolMode === 'combine') {
+    const sectionField = document.createElement('label');
+    sectionField.className = 'field-group section-name-field';
+
+    const sectionLabel = document.createElement('span');
+    sectionLabel.textContent = 'Section name';
+
+    const sectionInput = document.createElement('input');
+    sectionInput.type = 'text';
+    sectionInput.value = item.sectionName || '';
+    sectionInput.placeholder = formatSectionNameFromFileName(item.name) || 'Section name';
+    sectionInput.inputMode = 'text';
+    sectionInput.autocomplete = 'off';
+    sectionInput.spellcheck = false;
+    sectionInput.setAttribute('aria-label', `Section name for ${item.name}`);
+    sectionInput.addEventListener('input', (event) => {
+      item.sectionName = event.target.value;
+      clearOutput();
+      state.notice = '';
+    });
+    sectionInput.addEventListener('change', render);
+
+    sectionField.append(sectionLabel, sectionInput);
+    options.append(sectionField);
+  }
 
   const rangeField = document.createElement('label');
   rangeField.className = 'range-field';
@@ -1343,6 +1454,7 @@ function addFiles(fileList) {
       id: state.nextId++,
       file,
       name: file.name,
+      sectionName: formatSectionNameFromFileName(file.name),
       previewUrl: URL.createObjectURL(file),
       pages: null,
       error: null,
@@ -3422,8 +3534,13 @@ async function previewCombination() {
       }
 
       if (section.separatorPage) {
-        await addSeparatorPage(merged, item, section.index + 1, selection.indices.length, generatedPageSize);
-        pageInfos.push({ role: 'separator', sourceName: item.name, sectionIndex: section.index });
+        await addSeparatorPage(merged, section, generatedPageSize);
+        pageInfos.push({
+          role: 'separator',
+          sourceName: item.name,
+          sectionIndex: section.index,
+          sectionName: section.sectionName,
+        });
       }
 
       const sourceIndices = item.reverse ? [...selection.indices].reverse() : selection.indices;
@@ -3611,7 +3728,7 @@ async function addTableOfContents(pdf, options, entries, pageSize = COVER_PAGE_S
 
     pageEntries.forEach((entry, index) => {
       const y = height - 154 - index * 26;
-      const titleText = truncateText(bodyFont, toDrawableText(stripPdfExtension(entry.item.name), `Section ${entry.index + 1}`), 11, width - 240);
+      const titleText = truncateText(bodyFont, toDrawableText(entry.sectionName, `Section ${entry.index + 1}`), 11, width - 240);
       const detailText = truncateText(bodyFont, entry.rangeLabel, 8, width - 240);
 
       page.drawText(String(entry.index + 1).padStart(2, '0'), {
@@ -3642,7 +3759,7 @@ async function addTableOfContents(pdf, options, entries, pageSize = COVER_PAGE_S
         font: bodyFont,
         color: rgb(0.14, 0.22, 0.34),
       });
-      page.drawText(String(entry.sectionStartPage), {
+      page.drawText(String(entry.startPage), {
         x: width - 86,
         y,
         size: 10,
@@ -3661,15 +3778,16 @@ async function addTableOfContents(pdf, options, entries, pageSize = COVER_PAGE_S
   }
 }
 
-async function addSeparatorPage(pdf, item, sectionNumber, selectedCount, pageSize = COVER_PAGE_SIZE) {
+async function addSeparatorPage(pdf, section, pageSize = COVER_PAGE_SIZE) {
+  const { item, index, sourceSelectedCount } = section;
   const page = pdf.addPage();
   page.setSize(pageSize[0], pageSize[1]);
   const titleFont = await pdf.embedFont(StandardFonts.HelveticaBold);
   const bodyFont = await pdf.embedFont(StandardFonts.Helvetica);
   const { width, height } = page.getSize();
-  const sectionLabel = `Section ${sectionNumber}`;
-  const fileTitle = toDrawableText(stripPdfExtension(item.name), sectionLabel);
-  const pageCount = pluralize(selectedCount, 'selected page');
+  const sectionLabel = `Section ${index + 1}`;
+  const fileTitle = toDrawableText(section.sectionName, getSectionName(item, index + 1));
+  const pageCount = pluralize(sourceSelectedCount, 'page');
 
   page.drawRectangle({
     x: 0,

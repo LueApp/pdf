@@ -289,6 +289,18 @@ button:disabled {
   align-items: end;
 }
 
+.section-name-field {
+  grid-column: 1 / -1;
+}
+
+.section-name-field > span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
 .range-field,
 .rotate-group,
 .field-group {
